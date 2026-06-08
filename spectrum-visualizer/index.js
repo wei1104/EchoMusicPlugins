@@ -6,12 +6,12 @@ const DEFAULT_SETTINGS = {
   showPlayerBar: false,
   showMiniPlayer: false,
   showLyricControls: true,
-  fps: 30,
-  binCount: 96,
-  fftSize: 2048,
+  fps: 15,
+  binCount: 64,
+  fftSize: 1024,
   smoothing: 72,
   scale: "log",
-  mode: "hybrid",
+  mode: "bars",
   palette: "aurora",
   fill: 84,
   opacity: 56,
@@ -35,6 +35,8 @@ let latestFrame = null;
 let lastDrawAt = 0;
 let runtimeCtx = null;
 let spectrumOptionsKey = "";
+let spectrumStatusTimer = 0;
+let lastStatusWarningKey = "";
 
 const mountedLayers = new Set();
 
@@ -58,8 +60,8 @@ const normalizeSettings = (value) => {
     showMiniPlayer: source.showMiniPlayer ?? DEFAULT_SETTINGS.showMiniPlayer,
     showLyricControls:
       source.showLyricControls ?? DEFAULT_SETTINGS.showLyricControls,
-    fps: [15, 30, 60].includes(fps) ? fps : DEFAULT_SETTINGS.fps,
-    binCount: [32, 64, 96, 128, 256].includes(binCount)
+    fps: [15, 24, 30].includes(fps) ? fps : DEFAULT_SETTINGS.fps,
+    binCount: [32, 64, 96, 128].includes(binCount)
       ? binCount
       : DEFAULT_SETTINGS.binCount,
     fftSize: [1024, 2048, 4096, 8192].includes(fftSize)
@@ -88,6 +90,7 @@ const normalizeSettings = (value) => {
 const hasVisibleTarget = (settings) =>
   Boolean(
     settings.enabled &&
+    document.visibilityState !== "hidden" &&
     (settings.showPlayerBar ||
       settings.showMiniPlayer ||
       settings.showLyricControls),
@@ -103,6 +106,59 @@ const toSubscriptionOptions = (settings) => ({
   scale: settings.scale,
   includeWaveform: settings.mode !== "bars",
 });
+
+const getStatusLabel = (status) => {
+  if (!status) return "未订阅";
+  if (status.running) return "捕获中";
+  if (status.available) return "待机";
+  return "不可用";
+};
+
+const setSpectrumStatus = (status) => {
+  if (!state) return;
+  state.spectrumStatus = status || null;
+
+  const reason = status?.reason || "";
+  const warningKey =
+    status && !status.running && (!status.available || reason)
+      ? `${status.provider}:${reason}`
+      : "";
+  if (warningKey && warningKey !== lastStatusWarningKey) {
+    lastStatusWarningKey = warningKey;
+    console.warn("[spectrum-visualizer] 频谱捕获未运行", status);
+  } else if (!warningKey) {
+    lastStatusWarningKey = "";
+  }
+};
+
+const refreshSpectrumStatus = async () => {
+  if (!state || !runtimeCtx?.audio?.spectrum?.getStatus) return;
+  try {
+    setSpectrumStatus(await runtimeCtx.audio.spectrum.getStatus());
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : String(error || "频谱状态读取失败");
+    setSpectrumStatus({
+      available: false,
+      running: false,
+      provider: "unavailable",
+      reason: message,
+    });
+  }
+};
+
+const scheduleSpectrumStatusRefresh = (delay = 250) => {
+  if (spectrumStatusTimer) window.clearTimeout(spectrumStatusTimer);
+  spectrumStatusTimer = window.setTimeout(() => {
+    spectrumStatusTimer = 0;
+    void refreshSpectrumStatus();
+  }, delay);
+};
+
+const clearSpectrumStatusRefresh = () => {
+  if (spectrumStatusTimer) window.clearTimeout(spectrumStatusTimer);
+  spectrumStatusTimer = 0;
+};
 
 const getLayerAllowed = (kind, settings) => {
   if (!settings.enabled) return false;
@@ -224,9 +280,8 @@ const makeGradient = (context, width, height, palette) => {
   return gradient;
 };
 
-const roundRect = (context, x, y, width, height, radius) => {
+const appendRoundRect = (context, x, y, width, height, radius) => {
   const r = Math.min(radius, width / 2, height / 2);
-  context.beginPath();
   context.moveTo(x + r, y);
   context.lineTo(x + width - r, y);
   context.quadraticCurveTo(x + width, y, x + width, y + r);
@@ -265,9 +320,10 @@ const drawBars = (context, width, height, frame, settings, kind) => {
   const gradient = makeGradient(context, width, height, settings.palette);
 
   context.save();
-  context.shadowColor = "rgba(80, 220, 255, 0.18)";
-  context.shadowBlur = kind === "mini" ? 10 : 14;
+  context.shadowColor = "rgba(80, 220, 255, 0.14)";
+  context.shadowBlur = count > 128 ? 0 : kind === "mini" ? 6 : 8;
   context.fillStyle = gradient;
+  context.beginPath();
 
   for (let index = 0; index < count; index += 1) {
     const value = Math.pow((bins[index] || 0) / 255, 1.35);
@@ -275,9 +331,9 @@ const drawBars = (context, width, height, frame, settings, kind) => {
     const x = index * slot + gap * 0.5;
     const y = bottom - barHeight;
     const barWidth = Math.max(2, slot - gap);
-    roundRect(context, x, y, barWidth, barHeight, radius);
-    context.fill();
+    appendRoundRect(context, x, y, barWidth, barHeight, radius);
   }
+  context.fill();
 
   context.restore();
 };
@@ -309,19 +365,20 @@ const drawWave = (context, width, height, frame, settings, alpha = 0.86) => {
 };
 
 const drawIdle = (context, width, height, settings, time) => {
-  const count = settings.binCount;
+  const count = Math.min(settings.binCount, 48);
   const slot = width / count;
   const colors = PALETTES[settings.palette] || PALETTES.aurora;
   context.save();
   context.globalAlpha = 0.2;
   context.fillStyle = colors[1];
+  context.beginPath();
   for (let index = 0; index < count; index += 1) {
     const wave = 0.5 + 0.5 * Math.sin(time / 700 + index * 0.36);
     const barHeight = 2 + wave * 7;
     const x = index * slot + slot * 0.22;
-    roundRect(context, x, height - 12 - barHeight, slot * 0.56, barHeight, 2);
-    context.fill();
+    appendRoundRect(context, x, height - 12 - barHeight, slot * 0.56, barHeight, 2);
   }
+  context.fill();
   context.restore();
 };
 
@@ -355,7 +412,11 @@ const drawLayer = (entry, time) => {
 const draw = (time) => {
   animationFrame = window.requestAnimationFrame(draw);
   const settings = state?.settings ?? DEFAULT_SETTINGS;
-  const minInterval = 1000 / Math.max(15, settings.fps || 30);
+  const renderFps =
+    settings.mode === "hybrid"
+      ? Math.min(settings.fps || 15, 30)
+      : settings.fps || 15;
+  const minInterval = 1000 / Math.max(15, renderFps);
   if (time - lastDrawAt < minInterval) return;
   lastDrawAt = time;
 
@@ -367,7 +428,7 @@ const draw = (time) => {
     drawLayer(entry, time);
   }
 
-  if (!hasActiveLayer(settings)) {
+  if (!hasVisibleTarget(settings) || !hasActiveLayer(settings)) {
     updateRuntimeActivity();
   }
 };
@@ -391,6 +452,8 @@ function updateSpectrumSubscription() {
     unsubscribeSpectrum = null;
     spectrumOptionsKey = "";
     latestFrame = null;
+    clearSpectrumStatusRefresh();
+    setSpectrumStatus(null);
     return;
   }
 
@@ -403,9 +466,17 @@ function updateSpectrumSubscription() {
     nextOptions,
     (frame) => {
       latestFrame = frame;
+      if (!state?.spectrumStatus?.running) {
+        setSpectrumStatus({
+          available: true,
+          running: true,
+          provider: "system-loopback",
+        });
+      }
     },
   );
   spectrumOptionsKey = nextOptionsKey;
+  scheduleSpectrumStatusRefresh();
 }
 
 function updateRuntimeActivity() {
@@ -558,6 +629,31 @@ const createSettingsComponent = (ctx) =>
 
       return () =>
         h("div", { class: "echo-spectrum-settings" }, [
+          section("捕获状态", [
+            h(
+              "div",
+              {
+                class: [
+                  "echo-spectrum-status",
+                  state?.spectrumStatus?.running
+                    ? "is-running"
+                    : state?.spectrumStatus?.available
+                      ? "is-idle"
+                      : "is-unavailable",
+                ],
+              },
+              [
+                h("strong", getStatusLabel(state?.spectrumStatus)),
+                h(
+                  "small",
+                  state?.spectrumStatus?.reason ||
+                    (state?.spectrumStatus?.running
+                      ? "正在接收系统音频"
+                      : "启用显示位置后自动订阅"),
+                ),
+              ],
+            ),
+          ]),
           section("显示位置", [
             h("div", { class: "echo-spectrum-switches" }, [
               toggle("enabled", "启用频谱"),
@@ -604,8 +700,8 @@ const createSettingsComponent = (ctx) =>
                 "刷新率",
                 select("fps", [
                   { label: "15 FPS", value: 15 },
+                  { label: "24 FPS", value: 24 },
                   { label: "30 FPS", value: 30 },
-                  { label: "60 FPS", value: 60 },
                 ]),
               ),
               field(
@@ -615,7 +711,6 @@ const createSettingsComponent = (ctx) =>
                   { label: "64", value: 64 },
                   { label: "96", value: 96 },
                   { label: "128", value: 128 },
-                  { label: "256", value: 256 },
                 ]),
               ),
               field(
@@ -666,6 +761,7 @@ export async function activate(ctx) {
   runtimeCtx = ctx;
   state = ctx.vue.reactive({
     settings: normalizeSettings(await ctx.storage.get(STORAGE_KEY)),
+    spectrumStatus: null,
   });
 
   setupSettingsChannel();
@@ -694,6 +790,39 @@ export async function activate(ctx) {
   font-size: 14px;
   font-weight: 760;
   line-height: 1.2;
+}
+
+.echo-spectrum-status {
+  display: grid;
+  gap: 4px;
+  border: 1px solid color-mix(in srgb, var(--color-text-main, #f8fafc) 10%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--control-muted-bg, rgba(148, 163, 184, 0.12)) 78%, transparent);
+  padding: 10px 12px;
+}
+
+.echo-spectrum-status strong {
+  color: var(--color-text-main, var(--text-main, #f8fafc));
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.echo-spectrum-status small {
+  color: var(--color-text-secondary, var(--text-secondary, rgba(148, 163, 184, 0.9)));
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.echo-spectrum-status.is-running {
+  border-color: color-mix(in srgb, #42f5b3 34%, transparent);
+  background: color-mix(in srgb, #42f5b3 10%, transparent);
+}
+
+.echo-spectrum-status.is-unavailable {
+  border-color: color-mix(in srgb, #ff4d7d 34%, transparent);
+  background: color-mix(in srgb, #ff4d7d 10%, transparent);
 }
 
 .echo-spectrum-grid {
@@ -856,13 +985,16 @@ export async function activate(ctx) {
 
   setupMainRuntime(ctx);
   setupMiniRuntime(ctx);
+  document.addEventListener("visibilitychange", updateRuntimeActivity);
 
   updateRuntimeActivity();
 
   ctx.dispose(() => {
+    document.removeEventListener("visibilitychange", updateRuntimeActivity);
     unsubscribeSpectrum?.();
     unsubscribeSpectrum = null;
     spectrumOptionsKey = "";
+    clearSpectrumStatusRefresh();
     stopAnimation();
     channel?.close();
     channel = null;
@@ -875,9 +1007,11 @@ export async function activate(ctx) {
 }
 
 export function deactivate() {
+  document.removeEventListener("visibilitychange", updateRuntimeActivity);
   unsubscribeSpectrum?.();
   unsubscribeSpectrum = null;
   spectrumOptionsKey = "";
+  clearSpectrumStatusRefresh();
   stopAnimation();
   channel?.close();
   channel = null;
