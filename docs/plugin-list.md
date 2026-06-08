@@ -58,3 +58,22 @@ https://github.com/hoowhoami/EchoMusicPlugins
 - 手动安装：将 `lyric-info-scroll` 整个文件夹复制到 EchoMusic 插件目录。
 
 更多说明见 [信息区歌词滚动 README](../lyric-info-scroll/README.md)。
+
+## 频谱可视化
+
+路径：[`spectrum-visualizer`](../spectrum-visualizer)
+
+功能：
+
+- 在主窗口 PlayerBar 显示跟随当前音频变化的频谱背景。
+- 在 mini 播放器卡片显示频谱背景。
+- 在歌词页底部控制栏上方显示频谱区域。
+- 支持三个显示位置分别开关。
+- 支持柱状、波形、混合模式和频谱采样参数设置。
+
+安装方式：
+
+- 在线安装：添加本仓库插件源后，在“在线插件”中安装“频谱可视化”。
+- 手动安装：将 `spectrum-visualizer` 整个文件夹复制到 EchoMusic 插件目录。
+
+更多说明见 [频谱可视化 README](../spectrum-visualizer/README.md)。
