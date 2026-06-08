@@ -112,6 +112,14 @@ const getLayerAllowed = (kind, settings) => {
   return false;
 };
 
+const hasActiveLayer = (settings) =>
+  Array.from(mountedLayers).some(
+    (entry) =>
+      entry.layer.isConnected &&
+      entry.host.isConnected &&
+      getLayerAllowed(entry.kind, settings),
+  );
+
 const createLayerElement = (kind) => {
   const layer = document.createElement("div");
   layer.className = `echo-spectrum-layer echo-spectrum-${kind}`;
@@ -157,7 +165,7 @@ const updateMountedLayers = () => {
     setLayerVariables(entry);
     entry.layer.hidden = !getLayerAllowed(entry.kind, settings);
   }
-  updateSpectrumSubscription();
+  updateRuntimeActivity();
 };
 
 const mountLayer = (host, kind, options = {}) => {
@@ -358,6 +366,10 @@ const draw = (time) => {
     }
     drawLayer(entry, time);
   }
+
+  if (!hasActiveLayer(settings)) {
+    updateRuntimeActivity();
+  }
 };
 
 const ensureAnimation = () => {
@@ -374,14 +386,7 @@ function updateSpectrumSubscription() {
   if (!state || !runtimeCtx) return;
   const settings = state.settings;
 
-  const hasActiveLayer = Array.from(mountedLayers).some(
-    (entry) =>
-      entry.layer.isConnected &&
-      entry.host.isConnected &&
-      getLayerAllowed(entry.kind, settings),
-  );
-
-  if (!hasVisibleTarget(settings) || !hasActiveLayer) {
+  if (!hasVisibleTarget(settings) || !hasActiveLayer(settings)) {
     unsubscribeSpectrum?.();
     unsubscribeSpectrum = null;
     spectrumOptionsKey = "";
@@ -401,6 +406,20 @@ function updateSpectrumSubscription() {
     },
   );
   spectrumOptionsKey = nextOptionsKey;
+}
+
+function updateRuntimeActivity() {
+  if (!state) {
+    stopAnimation();
+    return;
+  }
+
+  updateSpectrumSubscription();
+
+  const shouldRender =
+    hasVisibleTarget(state.settings) && hasActiveLayer(state.settings);
+  if (shouldRender) ensureAnimation();
+  else stopAnimation();
 }
 
 const broadcastSettings = () => {
@@ -838,8 +857,7 @@ export async function activate(ctx) {
   setupMainRuntime(ctx);
   setupMiniRuntime(ctx);
 
-  ensureAnimation();
-  updateSpectrumSubscription();
+  updateRuntimeActivity();
 
   ctx.dispose(() => {
     unsubscribeSpectrum?.();

@@ -13,6 +13,6 @@
     "audioSpectrum": true
   },
   "requires": {
-    "echoMusicVersion": ">=2.2.6-beta.10"
+    "echoMusicVersion": ">=2.2.6-beta.11"
   }
 }

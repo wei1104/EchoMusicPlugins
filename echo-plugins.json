@@ -14,7 +14,7 @@
       "homepage": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/cover-fallback",
       "tags": ["appearance", "cover", "mini-player"],
       "requires": {
-        "echoMusicVersion": ">=2.2.6-beta.9"
+        "echoMusicVersion": ">=2.2.6-beta.10"
       }
     },
     {
@@ -29,7 +29,7 @@
       "homepage": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/lyric-info-scroll",
       "tags": ["lyrics", "player-bar", "mini-player"],
       "requires": {
-        "echoMusicVersion": ">=2.2.6-beta.9"
+        "echoMusicVersion": ">=2.2.6-beta.10"
       }
     },
     {
@@ -44,7 +44,7 @@
       "homepage": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/spectrum-visualizer",
       "tags": ["audio", "spectrum", "player-bar", "mini-player", "lyrics"],
       "requires": {
-        "echoMusicVersion": ">=2.2.6-beta.10"
+        "echoMusicVersion": ">=2.2.6-beta.11"
       }
     }
   ]
