@@ -446,22 +446,26 @@ const createSettingsComponent = (ctx) =>
   ctx.vue.defineComponent({
     name: "SpectrumVisualizerSettings",
     setup() {
+      const { defineAsyncComponent, h, onUnmounted, ref, watch } = ctx.vue;
+      const Select = defineAsyncComponent(ctx.ui.components.Select);
+      const Slider = defineAsyncComponent(ctx.ui.components.Slider);
+      const Switch = defineAsyncComponent(ctx.ui.components.Switch);
       const settings = ctx.vue.ref(normalizeSettings(state?.settings));
-      const busy = ctx.vue.ref(false);
+      const busy = ref(false);
 
       const syncFromState = () => {
         settings.value = normalizeSettings(state?.settings);
       };
 
-      const stopWatch = ctx.vue.watch(
+      const stopWatch = watch(
         () => state?.settings,
         () => {
           if (!busy.value) syncFromState();
         },
         { deep: true },
       );
-      if (typeof ctx.vue.onUnmounted === "function") {
-        ctx.vue.onUnmounted(stopWatch);
+      if (typeof onUnmounted === "function") {
+        onUnmounted(stopWatch);
       } else {
         ctx.dispose(stopWatch);
       }
@@ -476,70 +480,75 @@ const createSettingsComponent = (ctx) =>
         }
       };
 
+      const setLocalValue = (key, value) => {
+        settings.value = normalizeSettings({
+          ...settings.value,
+          [key]: value,
+        });
+      };
+
       const field = (label, control) =>
-        ctx.vue.h("label", { class: "echo-spectrum-field" }, [
-          ctx.vue.h("span", { class: "echo-spectrum-label" }, label),
+        h("div", { class: "echo-spectrum-field" }, [
+          h("span", { class: "echo-spectrum-label" }, label),
           control,
         ]);
 
       const select = (key, options) =>
-        ctx.vue.h(
-          "select",
-          {
-            value: settings.value[key],
-            disabled: busy.value,
-            onChange: (event) => patch({ [key]: event.target.value }),
-          },
-          options.map((item) =>
-            ctx.vue.h("option", { value: item.value }, item.label),
-          ),
-        );
-
-      const range = (key, min, max, step = 1) =>
-        ctx.vue.h("input", {
-          type: "range",
-          min,
-          max,
-          step,
-          value: settings.value[key],
-          disabled: busy.value,
-          onInput: (event) => {
-            settings.value = normalizeSettings({
-              ...settings.value,
-              [key]: Number(event.target.value),
-            });
-          },
-          onChange: (event) => patch({ [key]: Number(event.target.value) }),
+        h(Select, {
+          modelValue: settings.value[key],
+          options,
+          class: "echo-spectrum-select",
+          "onUpdate:modelValue": (value) => patch({ [key]: value }),
         });
 
-      const toggle = (key, label, hint = "") =>
-        ctx.vue.h("label", { class: "echo-spectrum-switch" }, [
-          ctx.vue.h("span", { class: "echo-spectrum-switch-copy" }, [
-            ctx.vue.h("strong", label),
-            hint ? ctx.vue.h("small", hint) : null,
-          ]),
-          ctx.vue.h("input", {
-            type: "checkbox",
-            checked: Boolean(settings.value[key]),
+      const range = (key, min, max, step = 1, suffix = "") =>
+        h(
+          "div",
+          { class: "echo-spectrum-slider" },
+          h(Slider, {
+            modelValue: Number(settings.value[key]),
+            min,
+            max,
+            step,
+            showValue: true,
+            valueSuffix: suffix,
             disabled: busy.value,
-            onChange: (event) => patch({ [key]: event.target.checked }),
+            "onUpdate:modelValue": (value) => setLocalValue(key, Number(value)),
+            onValueCommit: (value) => patch({ [key]: Number(value) }),
+          }),
+        );
+
+      const toggle = (key, label, hint = "") =>
+        h("div", { class: "echo-spectrum-switch" }, [
+          h("span", { class: "echo-spectrum-switch-copy" }, [
+            h("strong", label),
+            hint ? h("small", hint) : null,
+          ]),
+          h(Switch, {
+            modelValue: Boolean(settings.value[key]),
+            disabled: busy.value,
+            "onUpdate:modelValue": (value) => patch({ [key]: Boolean(value) }),
           }),
         ]);
 
+      const section = (title, children) =>
+        h("section", { class: "echo-spectrum-panel" }, [
+          h("h3", title),
+          ...children,
+        ]);
+
       return () =>
-        ctx.vue.h("div", { class: "echo-spectrum-settings" }, [
-          ctx.vue.h("section", { class: "echo-spectrum-panel" }, [
-            ctx.vue.h("h3", "显示位置"),
-            ctx.vue.h("div", { class: "echo-spectrum-switches" }, [
+        h("div", { class: "echo-spectrum-settings" }, [
+          section("显示位置", [
+            h("div", { class: "echo-spectrum-switches" }, [
               toggle("enabled", "启用频谱"),
               toggle("showPlayerBar", "PlayerBar 背景"),
               toggle("showMiniPlayer", "mini 播放器背景"),
               toggle("showLyricControls", "歌词页控制栏上方"),
             ]),
           ]),
-          ctx.vue.h("section", { class: "echo-spectrum-panel" }, [
-            ctx.vue.h("h3", "视觉参数"),
-            ctx.vue.h("div", { class: "echo-spectrum-grid" }, [
+          section("视觉参数", [
+            h("div", { class: "echo-spectrum-grid" }, [
               field(
                 "模式",
                 select("mode", [
@@ -557,15 +566,9 @@ const createSettingsComponent = (ctx) =>
                   { label: "单色", value: "mono" },
                 ]),
               ),
-              field(
-                `不透明度 ${settings.value.opacity}%`,
-                range("opacity", 18, 92),
-              ),
-              field(`填充高度 ${settings.value.fill}%`, range("fill", 35, 100)),
-              field(
-                `歌词页高度 ${settings.value.lyricHeight}px`,
-                range("lyricHeight", 48, 150),
-              ),
+              field("不透明度", range("opacity", 18, 92, 1, "%")),
+              field("填充高度", range("fill", 35, 100, 1, "%")),
+              field("歌词页高度", range("lyricHeight", 48, 150, 1, "px")),
               field(
                 "分布",
                 select("scale", [
@@ -576,11 +579,10 @@ const createSettingsComponent = (ctx) =>
               ),
             ]),
           ]),
-          ctx.vue.h("section", { class: "echo-spectrum-panel" }, [
-            ctx.vue.h("h3", "频谱采样"),
-            ctx.vue.h("div", { class: "echo-spectrum-grid" }, [
+          section("频谱采样", [
+            h("div", { class: "echo-spectrum-grid" }, [
               field(
-                `刷新率 ${settings.value.fps} FPS`,
+                "刷新率",
                 select("fps", [
                   { label: "15 FPS", value: 15 },
                   { label: "30 FPS", value: 30 },
@@ -588,7 +590,7 @@ const createSettingsComponent = (ctx) =>
                 ]),
               ),
               field(
-                `柱数 ${settings.value.binCount}`,
+                "柱数",
                 select("binCount", [
                   { label: "32", value: 32 },
                   { label: "64", value: 64 },
@@ -598,7 +600,7 @@ const createSettingsComponent = (ctx) =>
                 ]),
               ),
               field(
-                `FFT ${settings.value.fftSize}`,
+                "FFT",
                 select("fftSize", [
                   { label: "1024", value: 1024 },
                   { label: "2048", value: 2048 },
@@ -606,10 +608,7 @@ const createSettingsComponent = (ctx) =>
                   { label: "8192", value: 8192 },
                 ]),
               ),
-              field(
-                `平滑 ${settings.value.smoothing}%`,
-                range("smoothing", 0, 95),
-              ),
+              field("平滑", range("smoothing", 0, 95, 1, "%")),
             ]),
           ]),
         ]);
@@ -657,23 +656,25 @@ export async function activate(ctx) {
     `
 .echo-spectrum-settings {
   display: grid;
-  gap: 14px;
+  gap: 16px;
+  min-width: 0;
   color: var(--color-text-main, var(--text-main, #f8fafc));
 }
 
 .echo-spectrum-panel {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   border: 1px solid color-mix(in srgb, var(--color-text-main, #f8fafc) 12%, transparent);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-elevated-base, #111827) 72%, transparent);
+  background: color-mix(in srgb, var(--surface-card-base, #111827) 94%, transparent);
   padding: 14px;
 }
 
 .echo-spectrum-panel h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 760;
+  line-height: 1.2;
 }
 
 .echo-spectrum-grid {
@@ -684,15 +685,16 @@ export async function activate(ctx) {
 
 .echo-spectrum-field {
   display: grid;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
 }
 
 .echo-spectrum-label,
 .echo-spectrum-switch strong {
   color: var(--color-text-main, var(--text-main, #f8fafc));
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
+  line-height: 1.35;
 }
 
 .echo-spectrum-switch small {
@@ -701,48 +703,42 @@ export async function activate(ctx) {
   line-height: 1.35;
 }
 
-.echo-spectrum-field input,
-.echo-spectrum-field select {
+.echo-spectrum-select {
   width: 100%;
   min-width: 0;
-  height: 34px;
-  border: 1px solid color-mix(in srgb, var(--color-text-main, #f8fafc) 12%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-main-base, #0b1020) 86%, transparent);
-  color: var(--color-text-main, var(--text-main, #f8fafc));
-  padding: 0 10px;
-  font-size: 13px;
+  justify-content: space-between;
 }
 
-.echo-spectrum-field input[type="range"] {
-  height: 24px;
-  padding: 0;
-  accent-color: var(--color-primary, #31cfa1);
+.echo-spectrum-slider {
+  min-width: 0;
+  width: 100%;
+}
+
+.echo-spectrum-slider .slider-wrapper {
+  width: 100%;
 }
 
 .echo-spectrum-switches {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .echo-spectrum-switch {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
+  min-height: 46px;
+  border: 1px solid color-mix(in srgb, var(--color-text-main, #f8fafc) 10%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--control-muted-bg, rgba(148, 163, 184, 0.12)) 74%, transparent);
+  padding: 10px 12px;
 }
 
 .echo-spectrum-switch-copy {
   display: grid;
   gap: 2px;
   min-width: 0;
-}
-
-.echo-spectrum-switch input {
-  width: 38px;
-  height: 20px;
-  flex: 0 0 auto;
-  accent-color: var(--color-primary, #31cfa1);
 }
 
 .echo-spectrum-host {
