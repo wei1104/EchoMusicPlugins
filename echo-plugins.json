@@ -12,7 +12,11 @@
       "path": "cover-fallback",
       "repo": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/cover-fallback",
       "homepage": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/cover-fallback",
-      "tags": ["appearance", "cover", "mini-player"],
+      "tags": [
+        "appearance",
+        "cover",
+        "mini-player"
+      ],
       "requires": {
         "echoMusicVersion": ">=2.2.6-beta.10"
       }
@@ -27,7 +31,11 @@
       "path": "lyric-info-scroll",
       "repo": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/lyric-info-scroll",
       "homepage": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/lyric-info-scroll",
-      "tags": ["lyrics", "player-bar", "mini-player"],
+      "tags": [
+        "lyrics",
+        "player-bar",
+        "mini-player"
+      ],
       "requires": {
         "echoMusicVersion": ">=2.2.6-beta.10"
       }
@@ -42,7 +50,13 @@
       "path": "spectrum-visualizer",
       "repo": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/spectrum-visualizer",
       "homepage": "https://github.com/hoowhoami/EchoMusicPlugins/tree/main/spectrum-visualizer",
-      "tags": ["audio", "spectrum", "player-bar", "mini-player", "lyrics"],
+      "tags": [
+        "audio",
+        "spectrum",
+        "player-bar",
+        "mini-player",
+        "lyrics"
+      ],
       "requires": {
         "echoMusicVersion": ">=2.2.6-beta.12"
       }
@@ -77,6 +91,21 @@
       "icon": "logo.svg",
       "requires": {
         "echoMusicVersion": ">=2.2.6-beta.9"
+      }
+    },
+    {
+      "id": "Lyrics-bridge",
+      "name": "歌词桥接工具",
+      "version": "1.1.0",
+      "description": "将 EchoMusic 的歌词和播放状态推送到外部歌词软件，并支持接收外部歌词软件的播放控制指令",
+      "author": "xiaotian2333",
+      "main": "index.js",
+      "style": "style.css",
+      "capabilities": {
+        "process": true
+      },
+      "requires": {
+        "echoMusicVersion": ">=2.2.6-beta.12"
       }
     }
   ]
