@@ -302,6 +302,12 @@ const syncToStores = (ctx, songId, patch) => {
 const enrichTrack = async (ctx, state, song) => {
   if (!song._filePath) return song;
   console.log("[webdav-music] enrichTrack started for:", song._filePath);
+
+  // 检测音频音质（异步，不阻塞后续 enrich）
+  detectAndSetQuality(ctx, state, song).catch(
+    (err) => console.warn("[webdav-music] detectAndSetQuality failed:", err.message),
+  );
+
   const tags = await readEmbeddedTags(ctx, state.settings, song._filePath);
   if (!tags) return song;
   console.log("[webdav-music] Embedded tags:", "title:", !!tags.title, "artist:", !!tags.artist, "album:", !!tags.album, "cover:", !!tags.coverData, "lyric:", !!tags.lyric, "duration:", tags.duration);
@@ -315,6 +321,56 @@ const enrichTrack = async (ctx, state, song) => {
   syncToStores(ctx, song.id, patch);
   console.log("[webdav-music] enrichTrack done:", song._filePath);
   return song;
+};
+
+/** 从文件扩展名检测音质（无需网络请求） */
+const detectAudioQualityFromExtension = (filePath) => {
+  if (!filePath) return null;
+  const ext = filePath.slice(filePath.lastIndexOf(".") + 1).toLowerCase();
+  if (ext === "flac") return "flac";
+  if (ext === "wav" || ext === "ape" || ext === "aiff" || ext === "alac" || ext === "wv") return "flac";
+  if (ext === "dsf" || ext === "dff") return "super";
+  if (ext === "mp3") return null; // MP3 需要读取头部检测比特率
+  if (ext === "m4a" || ext === "aac") return "320"; // AAC/M4A 通常为 HQ
+  return null;
+};
+
+/** 检测音质并设置到播放器 store，锁定音质不可切换 */
+const detectAndSetQuality = async (ctx, state, song) => {
+  if (!state?.settings || !song._filePath || !ctx.stores?.player) return;
+  const settings = state.settings;
+  const filePath = song._filePath;
+  // 1) 优先使用扩展名检测（即时完成，无需网络请求）
+  let quality = detectAudioQualityFromExtension(filePath);
+  // 2) MP3 或无扩展名匹配时，尝试 Range 请求读取头部检测
+  if (!quality) {
+    try {
+      const headBuf = await webdavFetchRaw(settings, filePath, { headers: { Range: "bytes=0-262143" } });
+      if (headBuf?.ok) {
+        const ab = await headBuf.arrayBuffer();
+        const head = new Uint8Array(ab);
+        quality = detectAudioQualityFromHead(head, filePath);
+      }
+    } catch (err) {
+      console.warn("[webdav-music] detectAndSetQuality Range request failed:", err.message);
+    }
+  }
+  // 3) MP3 仍然检测失败时，默认设为 320
+  if (!quality && filePath.toLowerCase().endsWith(".mp3")) {
+    quality = "320";
+  }
+  if (!quality) {
+    console.log("[webdav-music] Could not detect quality for:", filePath);
+    return;
+  }
+  console.log("[webdav-music] Detected quality:", quality, "for", filePath);
+  // 延迟到下一轮事件循环再写入，确保在 playTrack 的
+  // currentResolvedAudioQuality = null (playback.ts:182) 和
+  // currentAudioQualityOverride = null (playback.ts:239) 之后最终写入正确值
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  ctx.stores.player.currentResolvedAudioQuality = quality;
+  // 锁定音质覆盖，防止用户通过 UI 切换
+  ctx.stores.player.currentAudioQualityOverride = quality;
 };
 
 /* ---- Helpers ---- */
@@ -384,6 +440,70 @@ const formatSize = (bytes) => {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 };
+/** 从文件头部数据检测音质 */
+const detectAudioQualityFromHead = (head, filePath = "") => {
+  if (!head || head.length < 8) return null;
+  // FLAC
+  if (head[0] === 0x66 && head[1] === 0x4C && head[2] === 0x61 && head[3] === 0x43) {
+    // 跳过 "fLaC" + 4字节 BLOCK HEADER，进入 STREAMINFO 内容
+    const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+    const blockSize = (head[5] << 16) | (head[6] << 8) | head[7];
+    if (blockSize >= 34) {
+      const bdv = new DataView(head.buffer, head.byteOffset + 8, blockSize);
+      const sampleRate = (bdv.getUint16(10) << 4) | (bdv.getUint8(12) >> 4);
+      const bps = (((bdv.getUint8(12) & 1) << 4) | (bdv.getUint8(13) >> 4)) + 1;
+      if (sampleRate > 48000 || bps > 16) return "high";
+    }
+    return "flac";
+  }
+  // DSF
+  if (head[0] === 0x44 && head[1] === 0x53 && head[2] === 0x44 && head[3] === 0x20) return "super";
+  // DFF
+  if (head[0] === 0x46 && head[1] === 0x52 && head[2] === 0x4D && head[3] === 0x38) return "super";
+  // MP3：ID3v2 标签或裸 MPEG 帧
+  let scanOff = 0;
+  if (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) {
+    const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+    scanOff = 10 + ((dv.getUint8(6) << 21) | (dv.getUint8(7) << 14) | (dv.getUint8(8) << 7) | dv.getUint8(9));
+  }
+  const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+  let maxBitrate = 0;
+  let framesFound = 0;
+  while (scanOff + 4 <= head.length && framesFound < 3) {
+    if (dv.getUint8(scanOff) === 0xFF && (dv.getUint8(scanOff + 1) & 0xE0) === 0xE0) {
+      const h = dv.getUint32(scanOff);
+      const ver = (h >> 19) & 0x3;
+      const lay = (h >> 17) & 0x3;
+      const idx = (h >> 12) & 0xF;
+      if (ver !== 1 && lay !== 0 && idx !== 0 && idx !== 15) {
+        let bitrate = 0;
+        if (ver === 3) {
+          const tbl = lay === 3 ? [0,32,64,96,128,160,192,224,256,288,320,352,384,416,448] : lay === 2 ? [0,32,48,56,64,80,96,112,128,160,192,224,256,320,384] : [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320];
+          bitrate = tbl[idx];
+        } else {
+          const tbl = lay === 3 ? [0,32,48,56,64,80,96,112,128,144,160,176,192,224,256] : [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160];
+          bitrate = tbl[idx];
+        }
+        if (bitrate > maxBitrate) maxBitrate = bitrate;
+        framesFound++;
+        // 计算下一帧偏移
+        if (lay === 3) {
+          const padding = (h >> 9) & 1;
+          scanOff += (ver === 3 ? 384 : 192) * bitrate * 1000 / (dv.getUint16(scanOff + 2) >> 2) + padding;
+          continue;
+        }
+      }
+    }
+    scanOff++;
+  }
+  if (maxBitrate > 0) return maxBitrate >= 320 ? "320" : "128";
+  // 文件扩展名兜底
+  const ext = filePath.slice(filePath.lastIndexOf(".") + 1).toLowerCase();
+  if (["wav","ape","aiff","alac"].includes(ext)) return "flac";
+  if (["dsf","dff"].includes(ext)) return "super";
+  return null;
+};
+
 const webdavFetch = async (ctx, settings, path, options = {}) => {
   const url = joinUrl(settings.serverUrl, path);
   const headers = { ...options.headers };
@@ -925,6 +1045,49 @@ const createBrowserPage = (ctx, state) => {
         }
       };
 
+      /** 双击播放：根据"替换播放队列"设置决定行为 */
+      const handleDoubleTapPlay = async (entry) => {
+        console.log("[webdav-music] handleDoubleTapPlay triggered for:", entry.name);
+        let song = createSong(entry, currentPath.value);
+        enrichSong(song).catch((err) => console.error("[webdav-music] enrichSong failed:", err));
+        const playlist = ctx.stores.playlist;
+        const player = ctx.stores.player;
+        const replace = ctx.stores.settings?.replacePlaylist;
+        try {
+          if (replace) {
+            // 用当前文件夹所有歌曲替换播放队列，并播放选中的歌曲
+            const allSongs = getSongs();
+            await playlist.setPlaybackQueueWithOptions(allSongs, 0, {
+              title: currentPath.value.split("/").filter(Boolean).pop() || "WebDAV",
+              type: "manual",
+              activate: true,
+            });
+            await player.playTrack(song.id, allSongs, {
+              sourceQueueId: playlist.activeQueueId,
+            });
+          } else {
+            // 将歌曲添加到当前播放队列并立即播放
+            const activeQueue = playlist.activeQueue;
+            let queueSongs = activeQueue?.songs?.length > 0 ? [...activeQueue.songs] : [];
+            const exists = queueSongs.some((s) => String(s.id) === String(song.id));
+            if (!exists) {
+              queueSongs.push(song);
+            }
+            await playlist.setPlaybackQueueWithOptions(queueSongs, 0, {
+              title: activeQueue?.title || "我的队列",
+              type: activeQueue?.type || "manual",
+              activate: true,
+            });
+            await player.playTrack(song.id, queueSongs, {
+              sourceQueueId: playlist.activeQueueId,
+            });
+          }
+        } catch (err) {
+          console.error("[webdav-music] Play error:", err);
+          ctx.toast.danger("播放失败");
+        }
+      };
+
       const playAll = async () => {
         const songs = getSongs();
         console.log("[webdav-music] playAll triggered, songs:", songs.length);
@@ -1122,7 +1285,7 @@ const createBrowserPage = (ctx, state) => {
                             class: ["webdav-row", isDir ? "webdav-row-dir" : "", isActive ? "is-active" : ""],
                             onDblclick: isDir
                               ? () => navigateTo(filePath + "/")
-                              : () => playSong(entry),
+                              : () => handleDoubleTapPlay(entry),
                             onContextmenu: (e) => showContextMenu(e, entry, isDir),
                           }, [
                             // 序号列
@@ -1205,11 +1368,37 @@ export async function activate(ctx) {
   const saved = await ctx.storage.get(STORAGE_KEY);
   state = ctx.vue.reactive({ settings: normalizeSettings(saved) });
 
-  // 注册自定义音源解析器：播放时动态构造带认证的 WebDAV URL
+  // 注册自定义音源解析器：播放时动态构造带认证的 WebDAV URL，并检测音质
   ctx.player.audioSource.register({
     id: "webdav",
     match: (context) => context.track.source === "webdav" && !!context.track._filePath,
-    resolve: (context) => buildAuthUrl(state.settings, context.track._filePath),
+    resolve: async (context) => {
+      const settings = state?.settings;
+      if (!settings) return null;
+      const filePath = context.track._filePath;
+      const url = buildAuthUrl(settings, filePath);
+      // 1) 优先使用扩展名检测（即时完成，无需网络请求）
+      let quality = detectAudioQualityFromExtension(filePath);
+      // 2) MP3 或无扩展名匹配时，尝试 Range 请求读取头部检测
+      if (!quality) {
+        try {
+          const headBuf = await webdavFetchRaw(settings, filePath, { headers: { Range: "bytes=0-262143" } });
+          if (headBuf?.ok) {
+            const ab = await headBuf.arrayBuffer();
+            const head = new Uint8Array(ab);
+            quality = detectAudioQualityFromHead(head, filePath);
+          }
+        } catch (err) {
+          console.warn("[webdav-music] Audio source resolver quality detect failed:", err.message);
+        }
+      }
+      // 3) MP3 仍然检测失败时，默认设为 320
+      if (!quality && filePath.toLowerCase().endsWith(".mp3")) {
+        quality = "320";
+      }
+      if (quality) return { url, quality };
+      return url; // fallback: 只返回 URL
+    },
   });
 
   // 监听播放器切歌，自动为 webdav 音轨充实嵌入标签元数据
