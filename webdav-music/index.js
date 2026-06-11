@@ -828,15 +828,6 @@ const ABOUT_HTML = `<div class="webdav-about">
 <li><strong>认证支持</strong>：支持 Basic Auth 用户名/密码认证</li>
 </ul>
 
-<h2>安装</h2>
-<p>将插件文件夹 <code>webdav-music</code> 放入 EchoMusic 的插件目录中即可。</p>
-<pre><code>EchoMusicPlugins/
-└── webdav-music/
-    ├── manifest.json
-    ├── icon.svg
-    ├── index.js
-    └── style.css</code></pre>
-
 <h2>使用</h2>
 <ol>
 <li>在插件设置中填写 WebDAV 服务器地址、用户名、密码和根目录路径</li>
