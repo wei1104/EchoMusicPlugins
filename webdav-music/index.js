@@ -1207,6 +1207,9 @@ const createBrowserPage = (ctx, state) => {
       
       // 排序
       const sortTick = ref(0);
+      
+      // 每个库的当前路径（用于切换时保留路径）
+      const libraryPaths = ref({});
 
       // 当前库的配置
       const currentLibrary = computed(() => {
@@ -1376,7 +1379,6 @@ const createBrowserPage = (ctx, state) => {
             coverCache.value[dirPath] = buildAuthUrl(lib, dirPath + coverFiles[0].name);
           }
           entries.value = [...dirs, ...files];
-          // 更新歌曲计数
           librarySongCounts.value[lib.id] = files.length;
         } catch (err) {
           error.value = "加载目录失败: " + (err.message || "未知错误");
@@ -1387,6 +1389,10 @@ const createBrowserPage = (ctx, state) => {
       };
 
       const navigateTo = (path) => {
+        const lib = currentLibrary.value;
+        if (lib) {
+          libraryPaths.value[lib.id] = normalizeDir(path);
+        }
         currentPath.value = normalizeDir(path);
         loadDirectory(currentPath.value);
       };
@@ -1406,13 +1412,16 @@ const createBrowserPage = (ctx, state) => {
 
       const refresh = () => loadDirectory(currentPath.value);
 
-      // 切换库
+      // 切换库（保留路径）
       const switchLibrary = (libId) => {
         activeLibraryId.value = libId;
         state.settings.activeLibraryId = libId;
         const lib = state.settings.libraries.find((l) => l.id === libId);
         if (lib) {
-          currentPath.value = normalizeDir(lib.rootPath || "/");
+          // 恢复之前保存的路径，如果没有则使用根路径
+          const savedPath = libraryPaths.value[libId];
+          const rootPath = normalizeDir(lib.rootPath || "/");
+          currentPath.value = savedPath || rootPath;
           loadDirectory(currentPath.value);
         }
       };
@@ -1567,7 +1576,8 @@ const createBrowserPage = (ctx, state) => {
       onMounted(() => {
         if (currentLibrary.value) {
           activeLibraryId.value = currentLibrary.value.id;
-          currentPath.value = normalizeDir(currentLibrary.value.rootPath || "/");
+          const rootPath = normalizeDir(currentLibrary.value.rootPath || "/");
+          currentPath.value = libraryPaths.value[currentLibrary.value.id] || rootPath;
           loadDirectory(currentPath.value);
         }
       });
@@ -1587,10 +1597,37 @@ const createBrowserPage = (ctx, state) => {
         }
 
         const lib = currentLibrary.value;
-        const libName = lib?.name || "WebDAV";
 
         return h("div", { class: "webdav-page" }, [
-          // 库标签页
+          // 顶部标题栏（仿主应用 "我最喜爱"）
+          h("div", { class: "webdav-header" }, [
+            h("div", { class: "webdav-header-icon" }, [
+              h(Icon, { icon: "tabler:server", width: 32, height: 32, class: "text-primary" }),
+            ]),
+            h("div", { class: "webdav-header-info" }, [
+              h("h1", { class: "webdav-header-title" }, "WebDAV"),
+              h("p", { class: "webdav-header-desc" }, "连接 WebDAV 服务器，浏览和播放云端音乐文件"),
+            ]),
+            // 操作按钮
+            h("div", { class: "webdav-header-actions" }, [
+              h("button", {
+                class: "webdav-btn webdav-btn-icon webdav-action-btn",
+                title: "播放全部",
+                onClick: playAll,
+              }, [
+                h(Icon, { icon: ctx.icons.iconPlayerPlay, width: 20, height: 20 }),
+              ]),
+              h("button", {
+                class: "webdav-btn webdav-btn-icon webdav-action-btn",
+                title: "批量操作",
+                onClick: () => { ctx.toast.info("批量操作功能开发中"); },
+              }, [
+                h(Icon, { icon: ctx.icons.iconListCheck, width: 20, height: 20 }),
+              ]),
+            ]),
+          ]),
+
+          // 库标签页 + 搜索/定位
           h("div", { class: "webdav-tabs-bar" }, [
             h("div", { class: "webdav-tabs-list" },
               state.settings.libraries.map((library) => {
@@ -1606,6 +1643,26 @@ const createBrowserPage = (ctx, state) => {
                 ]);
               }),
             ),
+            // 右侧搜索和定位
+            h("div", { class: "webdav-tabs-right" }, [
+              h("div", { class: "webdav-search-box" }, [
+                h(Icon, { icon: ctx.icons.iconSearch, width: 14, height: 14, class: "webdav-search-icon" }),
+                h("input", {
+                  class: "webdav-search-input",
+                  type: "text",
+                  placeholder: "搜索...",
+                  value: searchQuery.value,
+                  onInput: (e) => { searchQuery.value = e.target.value; },
+                }),
+              ]),
+              h("button", {
+                class: "webdav-btn webdav-btn-icon",
+                title: "定位当前播放",
+                onClick: () => { ctx.toast.info("定位功能开发中"); },
+              }, [
+                h(Icon, { icon: ctx.icons.iconCurrentLocation || ctx.icons.iconMapPin, width: 18, height: 18 }),
+              ]),
+            ]),
           ]),
 
           // 工具栏
@@ -1618,38 +1675,11 @@ const createBrowserPage = (ctx, state) => {
                 h(Icon, { icon: ctx.icons.iconRefresh, width: 18, height: 18 }),
               ]),
               h("button", { class: "webdav-btn webdav-btn-primary", onClick: playAll }, [
-                h(Icon, { icon: ctx.icons.iconPlay, width: 16, height: 16 }),
+                h(Icon, { icon: ctx.icons.iconPlayerPlay, width: 16, height: 16 }),
                 h("span", "播放全部"),
               ]),
             ]),
             h("div", { class: "webdav-toolbar-right" }, [
-              // 搜索框（UI 占位）
-              h("div", { class: "webdav-search-box" }, [
-                h(Icon, { icon: ctx.icons.iconSearch, width: 14, height: 14, class: "webdav-search-icon" }),
-                h("input", {
-                  class: "webdav-search-input",
-                  type: "text",
-                  placeholder: "搜索...",
-                  value: searchQuery.value,
-                  onInput: (e) => { searchQuery.value = e.target.value; },
-                }),
-              ]),
-              // 定位按钮（UI 占位）
-              h("button", {
-                class: "webdav-btn webdav-btn-icon",
-                title: "定位当前播放",
-                onClick: () => { ctx.toast.info("定位功能开发中"); },
-              }, [
-                h(Icon, { icon: ctx.icons.iconCurrentLocation || ctx.icons.iconMapPin, width: 18, height: 18 }),
-              ]),
-              // 批量按钮（UI 占位）
-              h("button", {
-                class: "webdav-btn webdav-btn-icon",
-                title: "批量操作",
-                onClick: () => { ctx.toast.info("批量操作功能开发中"); },
-              }, [
-                h(Icon, { icon: ctx.icons.iconListCheck || ctx.icons.iconCheckbox, width: 18, height: 18 }),
-              ]),
               h("span", { class: "webdav-count" },
                 entries.value.filter((e) => !e.isCollection).length + " 首"),
             ]),
@@ -1741,20 +1771,20 @@ const createBrowserPage = (ctx, state) => {
                             h("div", { class: "webdav-col-index" }, [
                               !isDir ? [
                                 isActive
-                                  ? h("div", { class: "webdav-index-active" }, [h(Icon, { icon: ctx.icons.iconPlay, width: 14, height: 14 })])
+                                  ? h("div", { class: "webdav-index-active" }, [h(Icon, { icon: ctx.icons.iconPlayerPlay, width: 14, height: 14 })])
                                   : [
                                       h("span", { class: "webdav-index-num" }, fileIdx),
                                       h("div", {
                                         class: "webdav-index-play",
                                         onClick: (e) => { e.stopPropagation(); playSong(entry); },
-                                      }, [h(Icon, { icon: ctx.icons.iconPlay, width: 14, height: 14 })]),
+                                      }, [h(Icon, { icon: ctx.icons.iconPlayerPlay, width: 14, height: 14 })]),
                                     ],
                               ] : [
                                 h("div", {
                                   class: "webdav-index-folder-play",
                                   onClick: (e) => { e.stopPropagation(); playFolder(filePath + "/"); },
                                   title: "播放此文件夹",
-                                }, [h(Icon, { icon: ctx.icons.iconPlay, width: 14, height: 14 })]),
+                                }, [h(Icon, { icon: ctx.icons.iconPlayerPlay, width: 14, height: 14 })]),
                               ],
                             ]),
                             h("div", { class: "webdav-col-song" }, [
