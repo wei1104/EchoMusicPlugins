@@ -1,47 +1,49 @@
 <svg
   xmlns="http://www.w3.org/2000/svg"
-  viewBox="0 0 64 64"
+  width="512"
+  height="512"
+  viewBox="0 0 512 512"
   role="img"
   aria-label="Page Motion"
 >
-  <rect width="64" height="64" rx="14" fill="#0ea5e9" />
+  <rect width="512" height="512" rx="112" fill="#0ea5e9" />
   <rect
-    x="15"
-    y="16"
-    width="30"
-    height="6"
-    rx="3"
+    x="120"
+    y="128"
+    width="240"
+    height="48"
+    rx="24"
     fill="#ffffff"
     opacity="0.9"
   />
   <rect
-    x="15"
-    y="28"
-    width="20"
-    height="5"
-    rx="2.5"
+    x="120"
+    y="224"
+    width="160"
+    height="40"
+    rx="20"
     fill="#ffffff"
     opacity="0.68"
   />
   <path
-    d="M33 42h-13"
+    d="M264 336H160"
     fill="none"
     stroke="#ffffff"
     stroke-linecap="round"
-    stroke-width="3.5"
+    stroke-width="28"
     opacity="0.42"
   />
   <path
-    d="M33 42h10v4.5l8-7.5-8-7.5V36H22v6h11z"
+    d="M264 336h80v36l64-60-64-60v36H176v48h88z"
     fill="#ffffff"
     opacity="0.96"
   />
   <path
-    d="M17 50c7.5-4.5 17-4.5 29 0"
+    d="M136 400c60-36 136-36 232 0"
     fill="none"
     stroke="#bae6fd"
     stroke-linecap="round"
-    stroke-width="3"
+    stroke-width="24"
     opacity="0.72"
   />
 </svg>
