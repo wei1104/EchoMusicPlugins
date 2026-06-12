@@ -1190,7 +1190,7 @@ const createSettingsPanel = (ctx, state) => {
 
 /* ---- Browser Page ---- */
 const createBrowserPage = (ctx, state) => {
-  const { h, ref, computed, onMounted, watch, defineAsyncComponent } = ctx.vue;
+  const { h, ref, computed, onMounted, watch, nextTick, defineAsyncComponent, Teleport } = ctx.vue;
 
   return ctx.vue.defineComponent({
     setup() {
@@ -1246,12 +1246,34 @@ const createBrowserPage = (ctx, state) => {
 
       // 右键菜单
       const contextMenu = ref(null);
+      const contextMenuRef = ref(null);
+      const contextMenuPosition = ref({ x: 0, y: 0 });
+      let contextMenuPoint = null;
+
+      const updateContextMenuPosition = () => {
+        if (!contextMenuPoint) return;
+        const menuEl = contextMenuRef.value;
+        const width = menuEl?.offsetWidth || 172;
+        const height = menuEl?.offsetHeight || 120;
+        const padding = 8;
+        const bottomPadding = 96;
+        const maxX = Math.max(padding, window.innerWidth - width - padding);
+        const maxY = Math.max(padding, window.innerHeight - height - bottomPadding);
+        contextMenuPosition.value = {
+          x: Math.round(Math.min(Math.max(contextMenuPoint.x, padding), maxX)),
+          y: Math.round(Math.min(Math.max(contextMenuPoint.y, padding), maxY)),
+        };
+      };
+
       const showContextMenu = (event, entry, isDir) => {
         event.preventDefault();
         event.stopPropagation();
-        contextMenu.value = { x: event.clientX, y: event.clientY, entry, isDir };
+        contextMenu.value = { entry, isDir };
+        contextMenuPoint = { x: event.clientX, y: event.clientY };
+        contextMenuPosition.value = contextMenuPoint;
+        nextTick(updateContextMenuPosition);
       };
-      const closeContextMenu = () => { contextMenu.value = null; };
+      const closeContextMenu = () => { contextMenu.value = null; contextMenuPoint = null; };
 
       const handleCtxPlayNow = async () => {
         const ctxMenu = contextMenu.value;
@@ -1669,12 +1691,14 @@ const createBrowserPage = (ctx, state) => {
                         }),
                       ),
           ]),
-          // 右键菜单
+          // 右键菜单（Teleport 到 body，与主应用一致，避免 position:fixed 受父级影响）
           contextMenu.value ? [
             h("div", { class: "webdav-context-overlay", onMousedown: closeContextMenu }),
-            h("div", { class: "webdav-context-menu", style: { left: contextMenu.value.x + "px", top: contextMenu.value.y + "px" } }, [
-              h("div", { class: "webdav-context-item", onClick: handleCtxPlayNow }, "立即播放"),
-              h("div", { class: "webdav-context-item", onClick: handleCtxPlayNext }, "下一首播放"),
+            h(Teleport, { to: "body" }, [
+              h("div", { ref: contextMenuRef, class: "webdav-context-menu", style: { left: contextMenuPosition.value.x + "px", top: contextMenuPosition.value.y + "px" } }, [
+                h("div", { class: "webdav-context-item", onClick: handleCtxPlayNow }, "立即播放"),
+                h("div", { class: "webdav-context-item", onClick: handleCtxPlayNext }, "下一首播放"),
+              ]),
             ]),
           ] : null,
         ]);
