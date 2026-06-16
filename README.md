@@ -277,7 +277,7 @@ export default {
 | `ctx.vue`                                                             | Vue 运行时，包含 `defineComponent`、`h`、`ref`、`computed`、`watch` 等                                                                                                                                                                                                                                                                                                                                        |
 | `ctx.app` / `ctx.router` / `ctx.pinia`                                | 主应用实例、路由和 Pinia 实例                                                                                                                                                                                                                                                                                                                                                                                 |
 | `ctx.stores.player` / `.playlist` / `.lyric` / `.settings` / `.theme` | 应用核心 store                                                                                                                                                                                                                                                                                                                                                                                                |
-| `ctx.player`                                                          | 播放控制便捷 API：`currentTrack/currentTrackId/currentTime/duration/isPlaying/playbackRate/volume/playMode`（computed）、`play()`、`playTrack()`、`playSong()`、`playNext()`、`replaceQueueAndPlay()`、`toggle()`、`stop()`、`next()`、`prev()`、`seek(time)`、`setVolume(vol)`、`setPlaybackRate(rate)`、`setPlayMode(mode)`、`setAudioQuality(quality)`、`setAudioEffect(effect)`、`toggleLyricView(open?)` |
+| `ctx.player`                                                          | 播放控制便捷 API：`currentTrack/currentTrackId/currentTime/duration/isPlaying/playbackRate/volume/playMode`（computed）、`play()`、`playTrack()`、`playSong()`、`playNext()`、`replaceQueueAndPlay()`、`toggle()`、`stop()`、`next()`、`prev()`、`dislikePersonalFm()`、`seek(time)`、`setVolume(vol)`、`setPlaybackRate(rate)`、`setPlayMode(mode)`、`setAudioQuality(quality)`、`setAudioEffect(effect)`、`toggleLyricView(open?)` |
 | `ctx.player.audioSource.register(options)`                            | 注册自定义音源解析器，要求 manifest 声明 `capabilities.audioSource: true`                                                                                                                                                                                                                                                                                                                                     |
 | `ctx.audio.spectrum`                                                  | 读取或订阅音频频谱：`getStatus()`、`getSnapshot()`、`subscribe(options, handler)`，要求 manifest 声明 `capabilities.audioSpectrum: true`                                                                                                                                                                                                                                                                      |
 | `ctx.playlist`                                                        | 播放队列便捷 API：读取当前队列/队列歌曲、替换队列、追加歌曲、播放歌曲、加入下一首、清空、移除、重排和切换活动队列                                                                                                                                                                                                                                                                                             |
@@ -683,6 +683,21 @@ const MyWidget = ctx.vue.defineComponent({
 ctx.vue.watch(ctx.player.currentTrack, (track) => {
   console.log("曲目变化:", track?.title);
 });
+```
+
+### 私人 FM「不喜欢」
+
+`ctx.player.dislikePersonalFm()` 对当前播放的私人 FM 曲目执行「不喜欢」：向服务端上报 `garbage`、从私人 FM 队列移除该曲目并自动切到下一首，与应用内私人 FM 页面的不喜欢按钮行为一致。
+
+仅当当前正在播放私人 FM（即 `nowPlaying.playback.isPersonalFM` 为 `true`）时生效；否则直接返回 `false` 不做任何操作。方法返回 `Promise<boolean>`，`true` 表示已执行不喜欢。建议调用前先做能力探测：`if (ctx.player.dislikePersonalFm) { ... }`。
+
+```js
+export function activate(ctx) {
+  ctx.commands.register('dislikeFm', async () => {
+    const handled = await ctx.player.dislikePersonalFm?.();
+    if (!handled) ctx.toast.info('当前不在私人 FM 播放中');
+  }, { title: '私人 FM 不喜欢' });
+}
 ```
 
 ### 自定义音源解析
