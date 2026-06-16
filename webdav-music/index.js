@@ -1077,7 +1077,7 @@ const createSettingsPanel = (ctx, state) => {
 
 /* ---- Browser Page ---- */
 const createBrowserPage = (ctx, state) => {
-  const { h, ref, computed, onMounted, watch, nextTick, defineAsyncComponent, Teleport } = ctx.vue;
+  const { h, ref, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent, Teleport } = ctx.vue;
 
   return ctx.vue.defineComponent({
     setup() {
@@ -1102,6 +1102,118 @@ const createBrowserPage = (ctx, state) => {
 
       // 当前播放歌曲列表容器引用（用于定位滚动）
       const listContainerRef = ref(null);
+
+      // ── 自定义滚动条（.webdav-content 区域） ──
+      const csbScrollTop = ref(0);
+      const csbScrollHeight = ref(0);
+      const csbClientHeight = ref(0);
+      const csbHovering = ref(false);
+      const csbMouseInArea = ref(false);
+      const csbDragging = ref(false);
+      const csbDragStartY = ref(0);
+      const csbDragStartScrollTop = ref(0);
+      let csbAutoHideTimer = null;
+      const csbContentRef = ref(null);
+
+      const csbThumbHeight = computed(() => {
+        if (csbScrollHeight.value === 0) return 0;
+        const track = Math.max(0, csbClientHeight.value - 12);
+        if (track === 0) return 0;
+        return Math.min(track, Math.max(30, track * (csbClientHeight.value / csbScrollHeight.value)));
+      });
+
+      const csbThumbTop = computed(() => {
+        if (csbScrollHeight.value === 0) return 0;
+        const maxScroll = csbScrollHeight.value - csbClientHeight.value;
+        if (maxScroll <= 0) return 6;
+        const track = Math.max(0, csbClientHeight.value - 12);
+        if (track === 0) return 6;
+        return 6 + (csbScrollTop.value / maxScroll) * Math.max(0, track - csbThumbHeight.value);
+      });
+
+      const csbVisible = computed(() => csbScrollHeight.value > csbClientHeight.value + 1);
+
+      const csbStyle = computed(() => {
+        const el = csbContentRef.value;
+        if (!el) return {};
+        const page = el.closest(".webdav-page");
+        if (!page) return {};
+        const pageRect = page.getBoundingClientRect();
+        const elRect = el.getBoundingClientRect();
+        return {
+          top: `${elRect.top - pageRect.top}px`,
+          height: `${elRect.height}px`,
+        };
+      });
+
+      const updateCsbMetrics = () => {
+        const el = csbContentRef.value;
+        if (!el) return;
+        csbScrollTop.value = el.scrollTop;
+        csbScrollHeight.value = el.scrollHeight;
+        csbClientHeight.value = el.clientHeight;
+      };
+
+      const clearCsbAutoHide = () => {
+        if (csbAutoHideTimer !== null) { clearTimeout(csbAutoHideTimer); csbAutoHideTimer = null; }
+      };
+
+      const scheduleCsbAutoHide = () => {
+        clearCsbAutoHide();
+        csbAutoHideTimer = window.setTimeout(() => {
+          if (!csbDragging.value && !csbMouseInArea.value) csbHovering.value = false;
+          csbAutoHideTimer = null;
+        }, 1500);
+      };
+
+      let csbResizeObserver = null;
+
+      const handleContentScroll = () => {
+        updateCsbMetrics();
+        csbHovering.value = true;
+        scheduleCsbAutoHide();
+      };
+
+      const handleCsbAreaEnter = () => { csbMouseInArea.value = true; csbHovering.value = true; clearCsbAutoHide(); };
+      const handleCsbAreaLeave = () => { csbMouseInArea.value = false; if (!csbDragging.value) scheduleCsbAutoHide(); };
+
+      const handleCsbThumbDown = (e) => {
+        e.preventDefault();
+        csbDragging.value = true;
+        csbDragStartY.value = e.clientY;
+        csbDragStartScrollTop.value = csbContentRef.value?.scrollTop ?? 0;
+        document.addEventListener("mousemove", handleCsbThumbMove);
+        document.addEventListener("mouseup", handleCsbThumbUp);
+      };
+
+      const handleCsbThumbMove = (e) => {
+        if (!csbDragging.value || !csbContentRef.value) return;
+        const el = csbContentRef.value;
+        const delta = e.clientY - csbDragStartY.value;
+        const maxScroll = csbScrollHeight.value - csbClientHeight.value;
+        const track = Math.max(1, csbClientHeight.value - 12 - csbThumbHeight.value);
+        el.scrollTop = Math.max(0, Math.min(maxScroll, csbDragStartScrollTop.value + (delta / track) * maxScroll));
+      };
+
+      const handleCsbThumbUp = () => {
+        csbDragging.value = false;
+        document.removeEventListener("mousemove", handleCsbThumbMove);
+        document.removeEventListener("mouseup", handleCsbThumbUp);
+        scheduleCsbAutoHide();
+      };
+
+      const handleCsbTrackClick = (e) => {
+        if (e.target.classList.contains("webdav-content-scrollbar-thumb")) return;
+        const el = csbContentRef.value;
+        const track = e.currentTarget;
+        if (!el || !track) return;
+        const rect = track.getBoundingClientRect();
+        const trackH = Math.max(1, csbClientHeight.value - 12);
+        const clickY = Math.max(0, Math.min(trackH, e.clientY - rect.top - 6));
+        const maxScroll = csbScrollHeight.value - csbClientHeight.value;
+        const maxThumb = Math.max(1, trackH - csbThumbHeight.value);
+        el.scrollTo({ top: Math.max(0, Math.min(maxScroll, ((clickY - csbThumbHeight.value / 2) / maxThumb) * maxScroll)), behavior: "smooth" });
+      };
 
       const currentLibrary = computed(() => {
         if (!state.settings.libraries || state.settings.libraries.length === 0) return null;
@@ -1449,6 +1561,24 @@ const createBrowserPage = (ctx, state) => {
           currentPath.value = libraryPaths.value[currentLibrary.value.id] || rootPath;
           loadDirectory(currentPath.value);
         }
+        nextTick(() => {
+          const el = csbContentRef.value;
+          if (el) {
+            el.addEventListener("scroll", handleContentScroll, { passive: true });
+            updateCsbMetrics();
+            csbResizeObserver = new ResizeObserver(() => updateCsbMetrics());
+            csbResizeObserver.observe(el);
+          }
+        });
+      });
+
+      onUnmounted(() => {
+        const el = csbContentRef.value;
+        if (el) el.removeEventListener("scroll", handleContentScroll);
+        csbResizeObserver?.disconnect();
+        clearCsbAutoHide();
+        document.removeEventListener("mousemove", handleCsbThumbMove);
+        document.removeEventListener("mouseup", handleCsbThumbUp);
       });
 
       const hasLibraries = computed(() => state.settings.libraries && state.settings.libraries.length > 0);
@@ -1617,7 +1747,7 @@ const createBrowserPage = (ctx, state) => {
             ]),
           ]),
           // === 可滚动内容区域（仅歌曲行） ===
-          h("div", { class: "webdav-content" }, [
+          h("div", { ref: csbContentRef, class: "webdav-content", style: { position: "relative" } }, [
             loading.value
               ? h("div", { class: "webdav-loading" }, "加载中...")
               : error.value
@@ -1680,6 +1810,24 @@ const createBrowserPage = (ctx, state) => {
                         }),
                       ),
           ]),
+          // 自定义滚动条（.webdav-content 外层，position:absolute 相对 .webdav-page）
+          csbVisible.value ? h("div", {
+            class: "webdav-content-scrollbar",
+            style: csbStyle.value,
+            onClick: handleCsbTrackClick,
+            onMouseenter: handleCsbAreaEnter,
+            onMouseleave: handleCsbAreaLeave,
+          }, [
+            h("div", {
+              class: "webdav-content-scrollbar-thumb",
+              style: {
+                height: `${csbThumbHeight.value}px`,
+                transform: `translateY(${csbThumbTop.value}px)`,
+                opacity: csbHovering.value ? "1" : "0",
+              },
+              onMousedown: handleCsbThumbDown,
+            }),
+          ]) : null,
           // 右键菜单（Teleport 到 body，与主应用一致，避免 position:fixed 受父级影响）
           contextMenu.value ? [
             h("div", { class: "webdav-context-overlay", onMousedown: closeContextMenu }),

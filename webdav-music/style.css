@@ -9,6 +9,7 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  position: relative;
   color: var(--color-text-main);
   background: var(--color-bg-main);
 }
@@ -29,19 +30,39 @@
   overflow-y: auto;
   overflow-x: hidden;
   min-height: 0;
+  scrollbar-width: none;
 }
 
 .webdav-content::-webkit-scrollbar {
-  width: 6px;
+  display: none;
 }
 
-.webdav-content::-webkit-scrollbar-track {
-  background: transparent;
+/* ---- Custom Scrollbar for Content ---- */
+.webdav-content-scrollbar {
+  position: absolute;
+  right: 0;
+  width: 12px;
+  padding: 6px 2px;
+  box-sizing: border-box;
+  z-index: 10;
+  pointer-events: none;
 }
 
-.webdav-content::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
+.webdav-content-scrollbar-thumb {
+  width: 4px;
+  margin-left: auto;
+  background: var(--scrollbar-thumb-bg, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.2s ease, width 0.2s ease, opacity 0.3s ease;
+  will-change: transform;
+}
+
+.webdav-content-scrollbar-thumb:hover,
+.webdav-content-scrollbar-thumb:active {
+  width: 8px;
+  background: var(--scrollbar-thumb-bg-active, rgba(128, 128, 128, 0.6));
 }
 
 /* ===================================================================
