@@ -150,6 +150,30 @@
       ]
     },
     {
+      "id": "plugin-panel",
+      "name": "插件面板",
+      "description": "在侧边栏添加插件面板快捷入口，一键跳转",
+      "author": "yaoyaoprincess",
+      "path": "",
+      "repo": "https://github.com/yaoyaoprincess/plugin-panel",
+      "homepage": "https://github.com/yaoyaoprincess/plugin-panel",
+      "tags": [
+        "plugin-panel"
+      ]
+    },    
+    {
+      "id": "echo-history-plus",
+      "name": "本地历史增强",
+      "description": "本地播放历史记录与统计分析，包含自建历史页面。完全本地运行，无需登录",
+      "author": "yaoyaoprincess",
+      "path": "",
+      "repo": "https://github.com/yaoyaoprincess/echo-history-plus",
+      "homepage": "https://github.com/yaoyaoprincess/echo-history-plus",
+      "tags": [
+        "history"
+      ]
+    },
+    {
       "id": "cover-color-lyric",
       "name": "取色歌词",
       "description": "桌面歌词颜色自动跟随歌曲封面主色调，算法与主程序 color.ts 完全一致；支持深浅色归一化、频谱律动、一键恢复默认设置",
