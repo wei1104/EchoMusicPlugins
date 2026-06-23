@@ -202,6 +202,18 @@
         "theme",
         "beautify"
       ]
+    },
+    {
+      "id": "echo-local-simple",
+      "name": "简单本地音乐",
+      "description": "简单实现的本地音乐播放",
+      "author": "天影大侠",
+      "path": "",
+      "repo": "https://github.com/SkyShadowHero/echo-local-simple",
+      "homepage": "https://github.com/SkyShadowHero/echo-local-simple",
+      "tags": [
+        "local"
+      ]
     }
   ]
 }
