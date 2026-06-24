@@ -1,4 +1,9 @@
 const SETTINGS_KEY = "settings";
+const PM_KEY = "playlistManager";
+
+const DEFAULT_PM_SETTINGS = { enabled: true, hiddenPlaylistIds: [], customCovers: {} };
+
+const PM_HIDE_CSS = '[data-echo-hidden-playlist="true"],[data-echo-hidden-divider="true"]{display:none!important}';
 
 const IMAGE_FILTERS = [{ name: "Images", extensions: ["jpg", "jpeg", "png", "ico", "webp", "bmp", "gif"] }];
 const ICO_FILTERS = [{ name: "Icons", extensions: ["ico"] }];
@@ -56,12 +61,126 @@ const SETTINGS_PANEL_CSS = `
 .custom-icon-settings input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;border-radius:3px;background:var(--color-text-secondary,rgba(148,163,184,0.9));outline:none;opacity:0.7;transition:opacity .2s}
 .custom-icon-settings input[type=range]:hover{opacity:1}
 .custom-icon-settings input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;background:var(--color-primary,#31cfa1);cursor:pointer;border:2px solid var(--color-bg-elevated,rgba(255,255,255,0.8));box-shadow:0 1px 3px rgba(0,0,0,0.3)}
+.pm-group-title{font-size:12px;font-weight:700;color:var(--color-text-secondary,var(--text-secondary,rgba(148,163,184,0.9)));margin-bottom:8px;padding-left:2px}
+.pm-playlist-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;transition:background .15s}
+.pm-playlist-item:hover{background:color-mix(in srgb,var(--color-text-main,#f8fafc) 5%,transparent)}
+.pm-playlist-cover{width:28px;height:28px;border-radius:6px;overflow:hidden;flex-shrink:0;background:color-mix(in srgb,var(--color-text-main,#f8fafc) 8%,transparent)}
+.pm-playlist-cover img{width:100%;height:100%;object-fit:cover;display:block}
+.pm-playlist-cover-placeholder{width:100%;height:100%;display:grid;place-items:center;color:var(--color-text-secondary,var(--text-secondary,rgba(148,163,184,0.9)));font-size:11px}
+.pm-playlist-name{flex:1;min-width:0;font-size:13px;font-weight:600;color:var(--color-text-main,var(--text-main,#f8fafc));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-playlist-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.pm-group{border:1px solid color-mix(in srgb,var(--color-text-main,#f8fafc) 12%,transparent);border-radius:8px;background:color-mix(in srgb,var(--surface-elevated-base,#111827) 72%,transparent);overflow:hidden}
+.pm-group-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;cursor:pointer;user-select:none;transition:background .15s}
+.pm-group-header:hover{background:color-mix(in srgb,var(--color-text-main,#f8fafc) 5%,transparent)}
+.pm-group-header-title{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--color-text-main,var(--text-main,#f8fafc))}
+.pm-group-header-count{color:var(--color-text-secondary,var(--text-secondary,rgba(148,163,184,0.9)));font-weight:500}
+.pm-group-arrow{transition:transform .2s;color:var(--color-text-secondary,var(--text-secondary,rgba(148,163,184,0.9)));font-size:10px}
+.pm-group-arrow.is-collapsed{transform:rotate(-90deg)}
+.pm-group-body{max-height:500px;overflow-y:auto;transition:max-height .25s ease-out}
+.pm-group-body.is-collapsed{max-height:0}
 @media(max-width:640px){.custom-icon-settings{grid-template-columns:1fr}.custom-icon-preview-panel{grid-template-columns:104px minmax(0,1fr);align-items:center}.custom-icon-preview-heading{grid-column:1/-1}.custom-icon-section{padding:12px}.custom-icon-switch-row{align-items:flex-start}}
 `;
 
 let state = null;
 let settingsDispose = null;
 let settingsStyleDispose = null;
+
+let pmState = null;
+let pmCssDispose = null;
+let pmObserverDispose = null;
+let originalPics = new Map();
+let pmCtx = null;
+
+const normalizePmSettings = (stored) => {
+  const src = (stored && typeof stored === "object") || Array.isArray(stored) ? stored : {};
+  return {
+    enabled: src.enabled !== undefined ? Boolean(src.enabled) : true,
+    hiddenPlaylistIds: Array.isArray(src.hiddenPlaylistIds) ? src.hiddenPlaylistIds.filter((id) => typeof id === "string" || typeof id === "number").map(String) : [],
+    customCovers: src.customCovers && typeof src.customCovers === "object" ? Object.fromEntries(
+      Object.entries(src.customCovers).filter(([, v]) => v && typeof v === "object")
+    ) : {},
+  };
+};
+
+const getPlaylistId = (playlist) => String(playlist.listid || playlist.id || "");
+
+const getPlaylistIdentityList = (p) => [p.id, p.listid, p.listCreateGid, p.globalCollectionId, p.listCreateListid]
+  .filter((v) => v !== undefined && v !== null && String(v) !== "").map(String);
+
+const applyHiddenPlaylists = (ctx, pmSettings) => {
+  removeHiddenPlaylists();
+  if (!pmSettings.enabled || pmSettings.hiddenPlaylistIds.length === 0) return;
+  pmCssDispose = ctx.css.inject(PM_HIDE_CSS, { id: "custom-icon-pm-hide" });
+  const likedId = String(ctx.stores.playlist?.likedPlaylistQueryId ?? "");
+  const markHiddenItems = () => {
+    const store = ctx.stores.playlist;
+    const playlists = store?.userPlaylists || [];
+    const hiddenSet = new Set(pmSettings.hiddenPlaylistIds);
+    const isLiked = (p) => likedId ? getPlaylistIdentityList(p).includes(likedId) : false;
+    const isDefault = (p) => p.source !== 2 && p.type === 0 && p.isDefault === true;
+    const pinnedIds = playlists.filter((p) => isDefault(p) || isLiked(p)).map(getPlaylistId);
+    const allPinnedHidden = pinnedIds.length > 0 && pinnedIds.every((id) => hiddenSet.has(id));
+    document.querySelectorAll(".sidebar-library-item, .sidebar-rail-cover-btn").forEach((el) => {
+      const span = el.querySelector("span");
+      const name = span ? span.textContent.trim() : "";
+      const matched = playlists.find((p) => hiddenSet.has(getPlaylistId(p)) && name === (p.name || ""));
+      if (matched) {
+        el.setAttribute("data-echo-hidden-playlist", "true");
+        el.setAttribute("data-playlist-id", getPlaylistId(matched));
+      }
+    });
+    document.querySelectorAll(".sidebar-playlist-divider").forEach((el) => {
+      if (allPinnedHidden) {
+        el.setAttribute("data-echo-hidden-divider", "true");
+      } else {
+        el.removeAttribute("data-echo-hidden-divider");
+      }
+    });
+  };
+  markHiddenItems();
+  pmObserverDispose = ctx.dom.observe(".sidebar-library-item, .sidebar-rail-cover-btn, .sidebar-playlist-divider", markHiddenItems);
+};
+
+const removeHiddenPlaylists = () => {
+  if (pmCssDispose) { pmCssDispose(); pmCssDispose = null; }
+  if (pmObserverDispose) { pmObserverDispose(); pmObserverDispose = null; }
+  document.querySelectorAll('[data-echo-hidden-playlist="true"]').forEach((el) => {
+    el.removeAttribute("data-echo-hidden-playlist");
+    el.removeAttribute("data-playlist-id");
+  });
+  document.querySelectorAll('[data-echo-hidden-divider="true"]').forEach((el) => {
+    el.removeAttribute("data-echo-hidden-divider");
+  });
+};
+
+const removeCustomCovers = () => {
+  if (originalPics.size === 0) return;
+  const store = pmCtx?.stores?.playlist || null;
+  if (store) {
+    const playlists = store.userPlaylists || [];
+    for (const [id, originalPic] of originalPics) {
+      const playlist = playlists.find((p) => getPlaylistId(p) === id);
+      if (playlist) playlist.pic = originalPic;
+    }
+  }
+  originalPics.clear();
+};
+
+const applyCustomCovers = async (ctx, pmSettings) => {
+  removeCustomCovers();
+  if (!pmSettings.enabled) return;
+  const store = ctx.stores.playlist;
+  const playlists = store?.userPlaylists || [];
+  const covers = pmSettings.customCovers || {};
+  for (const playlist of playlists) {
+    const id = getPlaylistId(playlist);
+    const cover = covers[id];
+    if (cover?.previewUrl) {
+      if (!originalPics.has(id)) originalPics.set(id, playlist.pic);
+      playlist.pic = cover.previewUrl;
+    }
+  }
+};
 
 const buildSettingsFromDraft = (draft, overrides = {}) => ({
   ...DEFAULT_SETTINGS,
@@ -74,26 +193,15 @@ const getExt = (name) => {
   return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : "";
 };
 
-const getMime = (ext) => {
-  const e = String(ext || "").toLowerCase().replace(/^\./, "");
-  if (e === "jpg" || e === "jpeg") return "image/jpeg";
-  if (e === "gif") return "image/gif";
-  if (e === "ico") return "image/x-icon";
-  if (e === "webp") return "image/webp";
-  if (e === "bmp") return "image/bmp";
-  return "image/png";
+const MIME_MAP = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", ico: "image/x-icon",
+  webp: "image/webp", bmp: "image/bmp", png: "image/png",
+  mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg",
+  m4a: "audio/mp4", aac: "audio/mp4", flac: "audio/flac", wma: "audio/x-ms-wma",
 };
 
-const getAudioMime = (ext) => {
-  const e = String(ext || "").toLowerCase().replace(/^\./, "");
-  if (e === "mp3") return "audio/mpeg";
-  if (e === "wav") return "audio/wav";
-  if (e === "ogg") return "audio/ogg";
-  if (e === "m4a" || e === "aac") return "audio/mp4";
-  if (e === "flac") return "audio/flac";
-  if (e === "wma") return "audio/x-ms-wma";
-  return "audio/mpeg";
-};
+const getMime = (ext) => MIME_MAP[String(ext || "").toLowerCase().replace(/^\./, "")] || "image/png";
+const getAudioMime = (ext) => MIME_MAP[String(ext || "").toLowerCase().replace(/^\./, "")] || "audio/mpeg";
 
 const bufferToDataUrl = (buf, mime) => {
   if (!buf) return "";
@@ -161,41 +269,38 @@ const stopSplashAudio = () => {
   }
 };
 
+const getLoadingView = () => document.querySelector(".loading-view");
+
 const playSplashAudio = async (ctx, settings) => {
   stopSplashAudio();
   if (!settings.splashAudioEnabled || !settings.splashAudioPath) return;
   try {
     const ext = getExt(settings.splashAudioPath);
     let url = "";
-    try {
-      const fileUrlResult = await ctx.fs.getFileUrl(settings.splashAudioPath);
-      if (fileUrlResult.ok && fileUrlResult.url) url = fileUrlResult.url;
-    } catch {}
-    if (!url && settings.splashAudioRelativePath) {
+    for (const p of [settings.splashAudioPath, settings.splashAudioRelativePath]) {
+      if (url || !p) continue;
       try {
-        const fileUrlResult = await ctx.fs.getFileUrl(settings.splashAudioRelativePath);
-        if (fileUrlResult.ok && fileUrlResult.url) url = fileUrlResult.url;
+        const r = await ctx.fs.getFileUrl(p);
+        if (r.ok && r.url) url = r.url;
       } catch {}
     }
     if (!url) {
-      const mime = getAudioMime(ext);
       const result = await ctx.fs.readFileBytes(settings.splashAudioPath, { maxBytes: 4 * 1024 * 1024 });
       if (!result?.ok) return;
-      url = bufferToDataUrl(result.data, mime);
+      url = bufferToDataUrl(result.data, getAudioMime(ext));
     }
     if (!url) return;
     splashAudio = new Audio(url);
     splashAudio.volume = settings.splashAudioVolume;
     splashAudio.play().catch(() => {});
-    const duration = Math.max(0.5, Number(settings.splashAudioDuration) || 3) * 1000;
-    splashAudioTimer = setTimeout(() => { stopSplashAudio(); }, duration);
+    splashAudioTimer = setTimeout(stopSplashAudio, Math.max(0.5, Number(settings.splashAudioDuration) || 3) * 1000);
   } catch {}
 };
 
 const cloneLogoToOverlay = (settings) => {
   if (!splashOverlay) return;
   splashOverlay.querySelectorAll(".splash-logo-clone").forEach((el) => el.remove());
-  const lv = document.querySelector(".loading-view");
+  const lv = getLoadingView();
   if (!lv) return;
   const main = lv.querySelector("main");
   if (main) {
@@ -203,13 +308,10 @@ const cloneLogoToOverlay = (settings) => {
     clone.classList.add("splash-logo-clone");
     clone.style.cssText = "position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:1;";
     if (!settings.splashShowLogo) {
-      const mainChildren = clone.querySelectorAll(":scope > *");
-      mainChildren.forEach((child) => { child.style.display = "none"; });
-    } else {
-      if (settings.splashStatusText) {
-        const statusEl = clone.querySelector("p") || clone.querySelector("span");
-        if (statusEl) statusEl.textContent = settings.splashStatusText;
-      }
+      clone.querySelectorAll(":scope > *").forEach((child) => { child.style.display = "none"; });
+    } else if (settings.splashStatusText) {
+      const statusEl = clone.querySelector("p") || clone.querySelector("span");
+      if (statusEl) statusEl.textContent = settings.splashStatusText;
     }
     splashOverlay.appendChild(clone);
   }
@@ -238,9 +340,8 @@ const resolveImageUrl = async (ctx, filePath) => {
 const applySplashCss = async (ctx, settings) => {
   removeSplashCss();
   if (!settings.splashEnabled || !settings.splashImagePath || !settings.splashPreviewUrl) return;
-  const isGif = isGifPath(settings.splashImagePath);
   let url = settings.splashPreviewUrl;
-  if (isGif) url = await resolveImageUrl(ctx, settings.splashImagePath) || url;
+  if (isGifPath(settings.splashImagePath)) url = await resolveImageUrl(ctx, settings.splashImagePath) || url;
   const sizeRule = settings.splashScale === "contain" ? "contain" : settings.splashScale === "fill" ? "100% 100%" : "cover";
   const blurRule = settings.splashBlurAmount > 0 ? `.custom-splash-img{filter:blur(${settings.splashBlurAmount}px)!important}` : "";
   const overlayRule = settings.splashOverlayOpacity > 0 ? `.loading-view::after{content:''!important;position:absolute!important;inset:0!important;background:${settings.splashOverlayColor}!important;opacity:${settings.splashOverlayOpacity}!important;z-index:1!important;pointer-events:none!important}` : "";
@@ -250,25 +351,22 @@ const applySplashCss = async (ctx, settings) => {
   splashCssDispose = ctx.css.inject(css, { id: "custom-splash-css" });
 };
 
+const createSplashImg = (url, target) => {
+  const img = document.createElement("img");
+  img.className = "custom-splash-img";
+  img.src = url;
+  img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none;";
+  target.prepend(img);
+  target.style.setProperty("background-image", `url("${url}")`, "important");
+};
+
 const showSplash = async (ctx, settings) => {
   removeSplash();
   if (!settings.splashImagePath || !settings.splashPreviewUrl) return;
-  const duration = Math.max(0.5, Number(settings.splashDuration) || 3) * 1000;
-  const isGif = isGifPath(settings.splashImagePath);
   let url = settings.splashPreviewUrl;
-  if (isGif) url = await resolveImageUrl(ctx, settings.splashImagePath) || url;
-
-  const lv = document.querySelector(".loading-view");
-  if (lv && !lv.querySelector(".custom-splash-img")) {
-    const fit = "cover";
-    const img = document.createElement("img");
-    img.className = "custom-splash-img";
-    img.src = url;
-    img.style.cssText = `position:absolute;inset:0;width:100%;height:100%;object-fit:${fit};z-index:0;pointer-events:none;`;
-    lv.prepend(img);
-    lv.style.setProperty("background-image", `url("${url}")`, "important");
-  }
-
+  if (isGifPath(settings.splashImagePath)) url = await resolveImageUrl(ctx, settings.splashImagePath) || url;
+  const lv = getLoadingView();
+  if (lv && !lv.querySelector(".custom-splash-img")) createSplashImg(url, lv);
   const overlay = document.createElement("div");
   overlay.setAttribute("data-custom-splash", "true");
   const blurRule = settings.splashBlurAmount > 0 ? `filter:blur(${settings.splashBlurAmount}px);` : "";
@@ -280,38 +378,27 @@ const showSplash = async (ctx, settings) => {
   });
   if (settings.splashOverlayOpacity > 0) {
     const ol = document.createElement("div");
-    Object.assign(ol.style, {
-      position: "absolute", inset: "0", background: settings.splashOverlayColor,
-      opacity: String(settings.splashOverlayOpacity), pointerEvents: "none",
-    });
+    Object.assign(ol.style, { position: "absolute", inset: "0", background: settings.splashOverlayColor, opacity: String(settings.splashOverlayOpacity), pointerEvents: "none" });
     overlay.appendChild(ol);
   }
   document.body.appendChild(overlay);
   splashOverlay = overlay;
   cloneLogoToOverlay(settings);
   setTimeout(() => { if (splashOverlay) splashOverlay.style.opacity = "1"; }, 50);
-  splashTimer = setTimeout(removeSplash, duration);
+  splashTimer = setTimeout(removeSplash, Math.max(0.5, Number(settings.splashDuration) || 3) * 1000);
 };
 
 const createSplashObserver = (ctx) => {
   return ctx.dom.observe(".loading-view", async (element) => {
     const s = state?.settings;
-    if (!s?.splashEnabled || !s?.splashImagePath || !s?.splashPreviewUrl) return;
-    if (element.querySelector(".custom-splash-img")) return;
+    if (!s?.splashEnabled || !s?.splashImagePath || !s?.splashPreviewUrl || element.querySelector(".custom-splash-img")) return;
     let url = s.splashPreviewUrl;
     if (isGifPath(s.splashImagePath)) url = await resolveImageUrl(ctx, s.splashImagePath) || url;
-    const fit = "cover";
-    const img = document.createElement("img");
-    img.className = "custom-splash-img";
-    img.src = url;
-    img.style.cssText = `position:absolute;inset:0;width:100%;height:100%;object-fit:${fit};z-index:0;pointer-events:none;`;
-    element.prepend(img);
-    element.style.setProperty("background-image", `url("${url}")`, "important");
-
+    createSplashImg(url, element);
     const main = element.querySelector("main");
     if (main) {
       const logoBox = main.querySelector("div");
-      if (logoBox && logoBox.querySelector("span")) {
+      if (logoBox?.querySelector("span")) {
         const desktopPath = s.desktopIconPath || s.trayIconPath || "";
         if (desktopPath) {
           logoBox.innerHTML = "";
@@ -331,12 +418,10 @@ const createSplashObserver = (ctx) => {
 
 const deleteFile = async (ctx, relativePath) => {
   if (!relativePath) return;
-  try {
-    await ctx.fs.deleteFile(relativePath);
-  } catch {}
+  try { await ctx.fs.deleteFile(relativePath); } catch {}
 };
 
-const readIconFile = async (ctx, filePath, title, filters, maxBytes) => {
+const readIconFile = async (ctx, filePath, title, filters, maxBytes, folder) => {
   try {
     const result = await ctx.dialog.selectFiles({ title, buttonLabel: "使用此图片", filters });
     const path = result?.paths?.[0] || "";
@@ -344,9 +429,8 @@ const readIconFile = async (ctx, filePath, title, filters, maxBytes) => {
     const source = await ctx.fs.readFileBytes(path, { maxBytes });
     if (!source?.ok) { ctx.toast.warning(`无法读取选择的图片（超过 ${Math.round(maxBytes / 1024 / 1024)}MB 或文件不可访问）`); return null; }
     const ext = getExt(path.split(/[\\/]/).pop() || "");
-    const folder = filePath === "splash" ? "assets/images" : "assets/icons";
-    const destName = getFileName(path);
-    const destPath = `${folder}/${destName}`;
+    const destFolder = folder || (filePath === "splash" ? "assets/images" : "assets/icons");
+    const destPath = `${destFolder}/${getFileName(path)}`;
     const writeResult = await ctx.fs.writeFile(destPath, source.data, { overwrite: true });
     if (!writeResult?.ok) { ctx.toast.warning(`图片保存失败: ${writeResult?.error || "未知错误"}`); return null; }
     return { relativePath: destPath, absolutePath: writeResult.path || "", previewUrl: bufferToDataUrl(source.data, getMime(ext)), ext: ext || "png" };
@@ -361,12 +445,10 @@ const readAudioFile = async (ctx, filePath, title, filters, maxBytes) => {
     const source = await ctx.fs.readFileBytes(path, { maxBytes });
     if (!source?.ok) { ctx.toast.warning(`无法读取选择的音效（超过 ${Math.round(maxBytes / 1024 / 1024)}MB 或文件不可访问）`); return null; }
     const ext = getExt(path.split(/[\\/]/).pop() || "");
-    const destName = getFileName(path);
-    const destPath = `assets/audio/${destName}`;
+    const destPath = `assets/audio/${getFileName(path)}`;
     const writeResult = await ctx.fs.writeFile(destPath, source.data, { overwrite: true });
     if (!writeResult?.ok) { ctx.toast.warning(`音效保存失败: ${writeResult?.error || "未知错误"}`); return null; }
-    const mime = getAudioMime(ext);
-    return { relativePath: destPath, absolutePath: writeResult.path || "", previewUrl: bufferToDataUrl(source.data, mime), ext: ext || "mp3" };
+    return { relativePath: destPath, absolutePath: writeResult.path || "", previewUrl: bufferToDataUrl(source.data, getAudioMime(ext)), ext: ext || "mp3" };
   } catch (e) { ctx.toast.warning(e instanceof Error ? e.message : "音效选择失败"); return null; }
 };
 
@@ -383,8 +465,7 @@ const createShortcutsUpdater = (ctx) => async (mode, iconPath, taskbarIconPath) 
     if (mode === "reset") {
       const desktopResult = await ctx.appIcons.restoreDefaultDesktopIcon();
       if (!ctx.process?.launch) return { ok: desktopResult?.ok !== false };
-      const args = ["shortcuts", "--mode", "reset", "--appName", "EchoMusic"];
-      await ctx.process.launch({ executable: "Tool.exe", args });
+      await ctx.process.launch({ executable: "Tool.exe", args: ["shortcuts", "--mode", "reset", "--appName", "EchoMusic"] });
       return { ok: desktopResult?.ok !== false };
     }
     if (!ctx.process?.launch) return { ok: false, error: "插件进程能力不可用" };
@@ -396,6 +477,24 @@ const createShortcutsUpdater = (ctx) => async (mode, iconPath, taskbarIconPath) 
 };
 
 const PREVIEW_LABELS = { tray: "托盘图标预览", taskbar: "任务栏图标预览", desktop: "桌面快捷方式图标预览" };
+
+const ICON_FILE_NAMES = { tray: "选择托盘图标图片", taskbar: "选择任务栏图标（推荐 .ico 格式）", desktop: "选择桌面快捷方式图标（推荐 .ico 格式）" };
+
+const cleanup = () => {
+  settingsDispose?.(); settingsDispose = null;
+  settingsStyleDispose?.(); settingsStyleDispose = null;
+  removeSplash();
+  removeSplashCss();
+  stopSplashAudio();
+  const lv = getLoadingView();
+  if (lv) { const img = lv.querySelector(".custom-splash-img"); if (img) img.remove(); lv.style.removeProperty("background-image"); }
+  splashObserverDispose?.(); splashObserverDispose = null;
+  removeHiddenPlaylists();
+  removeCustomCovers();
+  pmCtx = null;
+  state = null;
+  pmState = null;
+};
 
 const createSettingsComponent = (ctx) =>
   ctx.vue.defineComponent({
@@ -415,12 +514,18 @@ const createSettingsComponent = (ctx) =>
       const activeTab = ref("icons");
       const resolvedSplashUrl = ref("");
 
+      const pmDraft = reactive(normalizePmSettings(pmState?.settings));
+      const pmInitial = { ...normalizePmSettings(pmState?.settings) };
+      const pmSaving = ref(false);
+      const playlists = ref([]);
+      const favoritedPlaylists = ref([]);
+      const pmCreatedCollapsed = ref(false);
+      const pmFavoritedCollapsed = ref(false);
+
       const refreshSplashUrl = async () => {
-        if (draft.splashImagePath) {
-          resolvedSplashUrl.value = await resolveImageUrl(ctx, draft.splashImagePath) || draft.splashPreviewUrl;
-        } else {
-          resolvedSplashUrl.value = "";
-        }
+        resolvedSplashUrl.value = draft.splashImagePath
+          ? await resolveImageUrl(ctx, draft.splashImagePath) || draft.splashPreviewUrl
+          : "";
       };
 
       watch(() => draft.splashImagePath, refreshSplashUrl);
@@ -441,14 +546,7 @@ const createSettingsComponent = (ctx) =>
 
       onBeforeUnmount(() => {
         stopPreviewAudio();
-        const keys = [
-          ["trayIconPath", "trayRelativePath"],
-          ["taskbarIconPath", "taskbarRelativePath"],
-          ["desktopIconPath", "desktopRelativePath"],
-          ["splashImagePath", "splashRelativePath"],
-          ["splashAudioPath", "splashAudioRelativePath"],
-        ];
-        for (const [pathKey, relKey] of keys) {
+        for (const [pathKey, relKey] of [["trayIconPath", "trayRelativePath"], ["taskbarIconPath", "taskbarRelativePath"], ["desktopIconPath", "desktopRelativePath"], ["splashImagePath", "splashRelativePath"], ["splashAudioPath", "splashAudioRelativePath"]]) {
           const initial = initialSettings[relKey] || "";
           const current = draft[relKey] || "";
           if (current && current !== initial) deleteFile(ctx, current);
@@ -470,7 +568,7 @@ const createSettingsComponent = (ctx) =>
 
       const handleSelectIcon = async (key) => {
         const oldPath = draft[`${key}RelativePath`] || "";
-        const r = await readIconFile(ctx, key, key === "tray" ? "选择托盘图标图片" : key === "taskbar" ? "选择任务栏图标（推荐 .ico 格式）" : "选择桌面快捷方式图标（推荐 .ico 格式）", SHORTCUT_TYPES.has(key) ? ICO_FILTERS : IMAGE_FILTERS, 2 * 1024 * 1024);
+        const r = await readIconFile(ctx, key, ICON_FILE_NAMES[key], SHORTCUT_TYPES.has(key) ? ICO_FILTERS : IMAGE_FILTERS, 2 * 1024 * 1024);
         if (r) {
           if (oldPath) await deleteFile(ctx, oldPath);
           setVal(`${key}IconPath`, r.absolutePath || r.relativePath);
@@ -498,16 +596,12 @@ const createSettingsComponent = (ctx) =>
       const updateShortcuts = createShortcutsUpdater(ctx);
 
       const updateInitialSettings = () => {
-        initialSettings.trayIconPath = draft.trayIconPath;
-        initialSettings.trayRelativePath = draft.trayRelativePath;
-        initialSettings.taskbarIconPath = draft.taskbarIconPath;
-        initialSettings.taskbarRelativePath = draft.taskbarRelativePath;
-        initialSettings.desktopIconPath = draft.desktopIconPath;
-        initialSettings.desktopRelativePath = draft.desktopRelativePath;
-        initialSettings.splashImagePath = draft.splashImagePath;
-        initialSettings.splashRelativePath = draft.splashRelativePath;
-        initialSettings.splashAudioPath = draft.splashAudioPath;
-        initialSettings.splashAudioRelativePath = draft.splashAudioRelativePath;
+        for (const key of ["tray", "taskbar", "desktop", "splash", "splashAudio"]) {
+          const pathKey = key === "splashAudio" ? "splashAudioPath" : `${key}IconPath`;
+          const relKey = key === "splashAudio" ? "splashAudioRelativePath" : `${key}RelativePath`;
+          initialSettings[pathKey] = draft[pathKey];
+          initialSettings[relKey] = draft[relKey];
+        }
       };
 
       const saveIconSettings = async () => {
@@ -570,29 +664,22 @@ const createSettingsComponent = (ctx) =>
 
       const saveSplashSettings = async () => {
         if (saving.value) return;
-        saving.value = true; message.value = ""; statusText.value = ""; statusType.value = "";
+        saving.value = true;
         try {
           const s = normalizeSettings(draft);
           Object.assign(draft, s);
           await ctx.storage.set(SETTINGS_KEY, s);
           if (state) state.settings = s;
-          if (s.splashEnabled) {
-            applySplashCss(ctx, s);
-          } else {
-            removeSplashCss();
-          }
-          statusText.value = s.splashImagePath ? "启动画面: 已应用" : "启动画面: 已清除";
-          message.value = "启动画面设置已保存";
-          statusType.value = "success";
+          if (s.splashEnabled) applySplashCss(ctx, s); else removeSplashCss();
           ctx.toast.success("启动画面设置已保存");
           updateInitialSettings();
-        } catch (e) { const t = e instanceof Error ? e.message : "保存失败"; message.value = t; statusType.value = "error"; statusText.value = t; ctx.toast.warning(t); }
+        } catch (e) { ctx.toast.warning(e instanceof Error ? e.message : "保存失败"); }
         finally { saving.value = false; }
       };
 
       const resetSplashSettings = async () => {
         if (saving.value) return;
-        saving.value = true; message.value = ""; statusText.value = ""; statusType.value = "";
+        saving.value = true;
         try {
           const p = draft.splashRelativePath || "";
           const s = buildSettingsFromDraft(draft, {
@@ -605,12 +692,9 @@ const createSettingsComponent = (ctx) =>
           if (p) await deleteFile(ctx, p);
           removeSplashCss();
           resolvedSplashUrl.value = "";
-          statusText.value = "启动画面: 已恢复默认";
-          message.value = "已恢复默认启动画面";
-          statusType.value = "success";
           ctx.toast.success("已恢复默认启动画面");
           updateInitialSettings();
-        } catch (e) { const t = e instanceof Error ? e.message : "恢复失败"; message.value = t; statusType.value = "error"; statusText.value = t; ctx.toast.warning(t); }
+        } catch (e) { ctx.toast.warning(e instanceof Error ? e.message : "恢复失败"); }
         finally { saving.value = false; }
       };
 
@@ -628,18 +712,13 @@ const createSettingsComponent = (ctx) =>
       const handleClearAudio = async () => { const p = draft.splashAudioRelativePath || ""; setVal("splashAudioPath", ""); setVal("splashAudioRelativePath", ""); setVal("splashAudioPreviewUrl", ""); if (p) await deleteFile(ctx, p); };
 
       const previewAudio = async () => {
-        if (isPreviewPlaying.value) {
-          stopPreviewAudio();
-          return;
-        }
+        if (isPreviewPlaying.value) { stopPreviewAudio(); return; }
         if (!draft.splashAudioPath) return;
         try {
-          const ext = getExt(draft.splashAudioPath);
           let url = draft.splashAudioPreviewUrl;
           if (!url) {
-            const mime = getAudioMime(ext);
             const result = await ctx.fs.readFileBytes(draft.splashAudioPath, { maxBytes: 4 * 1024 * 1024 });
-            if (result?.ok) url = bufferToDataUrl(result.data, mime);
+            if (result?.ok) url = bufferToDataUrl(result.data, getAudioMime(getExt(draft.splashAudioPath)));
           }
           if (!url) return;
           previewAudioPlayer = new Audio(url);
@@ -652,41 +731,33 @@ const createSettingsComponent = (ctx) =>
 
       const saveAudioSettings = async () => {
         if (saving.value) return;
-        saving.value = true; message.value = ""; statusText.value = ""; statusType.value = "";
+        saving.value = true;
         stopPreviewAudio();
         try {
           const s = normalizeSettings(draft);
           Object.assign(draft, s);
           await ctx.storage.set(SETTINGS_KEY, s);
           if (state) state.settings = s;
-          statusText.value = s.splashAudioPath ? "启动音效: 已应用" : "启动音效: 已清除";
-          message.value = "启动音效设置已保存";
-          statusType.value = "success";
           ctx.toast.success("启动音效设置已保存");
           updateInitialSettings();
-        } catch (e) { const t = e instanceof Error ? e.message : "保存失败"; message.value = t; statusType.value = "error"; statusText.value = t; ctx.toast.warning(t); }
+        } catch (e) { ctx.toast.warning(e instanceof Error ? e.message : "保存失败"); }
         finally { saving.value = false; }
       };
 
       const resetAudioSettings = async () => {
         if (saving.value) return;
-        saving.value = true; message.value = ""; statusText.value = ""; statusType.value = "";
+        saving.value = true;
         stopPreviewAudio();
         try {
           const p = draft.splashAudioRelativePath || "";
-          const s = buildSettingsFromDraft(draft, {
-            splashAudioPath: "", splashAudioRelativePath: "", splashAudioPreviewUrl: "",
-          });
+          const s = buildSettingsFromDraft(draft, { splashAudioPath: "", splashAudioRelativePath: "", splashAudioPreviewUrl: "" });
           Object.assign(draft, s);
           await ctx.storage.set(SETTINGS_KEY, s);
           if (state) state.settings = s;
           if (p) await deleteFile(ctx, p);
-          statusText.value = "启动音效: 已恢复默认";
-          message.value = "已恢复默认启动音效";
-          statusType.value = "success";
           ctx.toast.success("已恢复默认启动音效");
           updateInitialSettings();
-        } catch (e) { const t = e instanceof Error ? e.message : "恢复失败"; message.value = t; statusType.value = "error"; statusText.value = t; ctx.toast.warning(t); }
+        } catch (e) { ctx.toast.warning(e instanceof Error ? e.message : "恢复失败"); }
         finally { saving.value = false; }
       };
 
@@ -711,10 +782,13 @@ const createSettingsComponent = (ctx) =>
         return { url: key ? draft[`${key}PreviewUrl`] : "", label: key ? PREVIEW_LABELS[key] : "自定义图标" };
       };
 
+      const clearTabState = () => { message.value = ""; statusText.value = ""; statusType.value = ""; };
+
       const renderTabBar = () => h("div", { class: "custom-icon-tabs" }, [
-        h("button", { class: ["custom-icon-tab", activeTab.value === "icons" ? "is-active" : ""], onClick: () => { stopPreviewAudio(); activeTab.value = "icons"; message.value = ""; statusText.value = ""; statusType.value = ""; } }, "图标"),
-        h("button", { class: ["custom-icon-tab", activeTab.value === "splash" ? "is-active" : ""], onClick: () => { stopPreviewAudio(); activeTab.value = "splash"; message.value = ""; statusText.value = ""; statusType.value = ""; } }, "启动画面"),
-        h("button", { class: ["custom-icon-tab", activeTab.value === "audio" ? "is-active" : ""], onClick: () => { activeTab.value = "audio"; message.value = ""; statusText.value = ""; statusType.value = ""; } }, "启动音效"),
+        h("button", { class: ["custom-icon-tab", activeTab.value === "icons" ? "is-active" : ""], onClick: () => { stopPreviewAudio(); activeTab.value = "icons"; clearTabState(); } }, "图标"),
+        h("button", { class: ["custom-icon-tab", activeTab.value === "splash" ? "is-active" : ""], onClick: () => { stopPreviewAudio(); activeTab.value = "splash"; clearTabState(); } }, "启动画面"),
+        h("button", { class: ["custom-icon-tab", activeTab.value === "audio" ? "is-active" : ""], onClick: () => { activeTab.value = "audio"; clearTabState(); } }, "启动音效"),
+        h("button", { class: ["custom-icon-tab", activeTab.value === "pm" ? "is-active" : ""], onClick: () => { stopPreviewAudio(); activeTab.value = "pm"; clearTabState(); } }, "歌单管理"),
       ]);
 
       const renderIconPreview = () => {
@@ -736,7 +810,6 @@ const createSettingsComponent = (ctx) =>
           resolvedSplashUrl.value ? h("img", { src: resolvedSplashUrl.value, alt: "启动画面预览" }) : h("div", { class: "custom-icon-preview-empty", innerHTML: "选择图片后在此预览<br>支持 .png/.jpg/.webp/.gif/.bmp<br>启动画面中的部分功能来自群友@小栀（rinnki）" }),
         ]),
         h("small", { style: "color:var(--color-text-secondary,rgba(148,163,184,0.9));font-size:11px;line-height:1.5;margin-top:4px;display:block" }, "图片大小限制 4MB，超过可能导致显示不全"),
-        renderStatus(),
       ]);
 
       const renderIconTab = () => [
@@ -841,7 +914,6 @@ const createSettingsComponent = (ctx) =>
       ];
 
       const renderAudioTab = () => [
-        renderStatus(),
         h("div", { class: "custom-icon-section" }, [
           h("div", { class: "custom-icon-switch-row" }, [
             h("div", { class: "custom-icon-switch-copy" }, [h("span", "开启自定义启动音效"), h("small", "关闭后不播放自定义音效")]),
@@ -882,27 +954,167 @@ const createSettingsComponent = (ctx) =>
         ]),
       ];
 
+      const refreshPlaylists = () => {
+        const store = ctx.stores.playlist;
+        const all = store?.userPlaylists || [];
+        const likedId = String(store?.likedPlaylistQueryId ?? "");
+        const isLiked = (p) => likedId ? getPlaylistIdentityList(p).includes(likedId) : false;
+        const isDefault = (p) => p.source !== 2 && p.type === 0 && p.isDefault === true;
+        const currentUserId = (() => {
+          for (const p of all) {
+            if (isDefault(p) || isLiked(p)) {
+              const uid = String(p.listCreateUserid ?? "");
+              if (uid) return uid;
+            }
+          }
+          return "";
+        })();
+        const isOwner = (p) => {
+          const ownerId = String(p.listCreateUserid ?? "");
+          return ownerId !== "" && currentUserId !== "" && ownerId === currentUserId;
+        };
+        const created = [];
+        const favorited = [];
+        for (const p of all) {
+          if (p.source === 2) continue;
+          const item = { ...p, _id: getPlaylistId(p) };
+          (isOwner(p) || isDefault(p) || isLiked(p) ? created : favorited).push(item);
+        }
+        playlists.value = created;
+        favoritedPlaylists.value = favorited;
+      };
+
+      const getPlaylistDisplayCover = (playlist) => pmDraft.customCovers[playlist._id]?.previewUrl || playlist.pic || "";
+
+      const handleTogglePlaylistHidden = (playlistId) => {
+        const idx = pmDraft.hiddenPlaylistIds.indexOf(playlistId);
+        if (idx >= 0) pmDraft.hiddenPlaylistIds.splice(idx, 1);
+        else pmDraft.hiddenPlaylistIds.push(playlistId);
+      };
+
+      const handleSelectPlaylistCover = async (playlistId) => {
+        const r = await readIconFile(ctx, "cover", "选择歌单封面图片", IMAGE_FILTERS, 4 * 1024 * 1024, "assets/covers");
+        if (!r) return;
+        const old = pmDraft.customCovers[playlistId];
+        if (old?.relativePath) await deleteFile(ctx, old.relativePath);
+        pmDraft.customCovers[playlistId] = { relativePath: r.relativePath, absolutePath: r.absolutePath || "", previewUrl: r.previewUrl };
+      };
+
+      const handleClearPlaylistCover = async (playlistId) => {
+        const old = pmDraft.customCovers[playlistId];
+        if (old?.relativePath) await deleteFile(ctx, old.relativePath);
+        delete pmDraft.customCovers[playlistId];
+      };
+
+      const savePmSettings = async () => {
+        if (pmSaving.value) return;
+        pmSaving.value = true;
+        try {
+          const s = normalizePmSettings(pmDraft);
+          Object.assign(pmDraft, s);
+          await ctx.storage.set(PM_KEY, s);
+          if (pmState) pmState.settings = s;
+          if (s.enabled) { applyHiddenPlaylists(ctx, s); await applyCustomCovers(ctx, s); }
+          else { removeHiddenPlaylists(); removeCustomCovers(); }
+          ctx.toast.success("歌单管理设置已保存");
+          pmInitial.hiddenPlaylistIds = [...s.hiddenPlaylistIds];
+          pmInitial.customCovers = { ...s.customCovers };
+        } catch (e) { ctx.toast.warning(e instanceof Error ? e.message : "保存失败"); }
+        finally { pmSaving.value = false; }
+      };
+
+      const resetPmSettings = async () => {
+        if (pmSaving.value) return;
+        pmSaving.value = true;
+        try {
+          for (const cover of Object.values(pmDraft.customCovers)) { if (cover?.relativePath) await deleteFile(ctx, cover.relativePath); }
+          Object.assign(pmDraft, DEFAULT_PM_SETTINGS);
+          await ctx.storage.set(PM_KEY, DEFAULT_PM_SETTINGS);
+          if (pmState) pmState.settings = { ...DEFAULT_PM_SETTINGS };
+          removeHiddenPlaylists();
+          removeCustomCovers();
+          ctx.toast.success("已恢复默认歌单管理");
+          pmInitial.hiddenPlaylistIds = [];
+          pmInitial.customCovers = {};
+        } catch (e) { ctx.toast.warning(e instanceof Error ? e.message : "恢复失败"); }
+        finally { pmSaving.value = false; }
+      };
+
+      const renderPlaylistItem = (playlist) => {
+        const pid = playlist._id;
+        const isHidden = pmDraft.hiddenPlaylistIds.includes(pid);
+        const cover = getPlaylistDisplayCover(playlist);
+        return h("div", { class: "pm-playlist-item" }, [
+          h("div", { class: "pm-playlist-cover" }, [
+            cover ? h("img", { src: cover, alt: playlist.name || "歌单" }) : h("div", { class: "pm-playlist-cover-placeholder" }, "♪"),
+          ]),
+          h("div", { class: "pm-playlist-name", title: playlist.name || "歌单" }, playlist.name || "未命名歌单"),
+          h("div", { class: "pm-playlist-actions" }, [
+            h(Switch, { modelValue: !isHidden, disabled: pmSaving.value || !pmDraft.enabled, "onUpdate:modelValue": () => handleTogglePlaylistHidden(pid) }),
+            h("button", {
+              type: "button", class: "custom-icon-tab",
+              style: "padding:4px 8px;font-size:11px;border:1px solid color-mix(in srgb,var(--color-text-main,#f8fafc) 12%,transparent);border-radius:6px;background:transparent;color:var(--color-text-main,var(--text-main,#f8fafc));cursor:pointer;white-space:nowrap",
+              disabled: pmSaving.value || !pmDraft.enabled, onClick: () => handleSelectPlaylistCover(pid),
+            }, pmDraft.customCovers[pid] ? "更换" : "换封面"),
+            pmDraft.customCovers[pid] ? h("button", {
+              type: "button", class: "custom-icon-tab",
+              style: "padding:4px 8px;font-size:11px;border:1px solid color-mix(in srgb,#ef4444 30%,transparent);border-radius:6px;background:transparent;color:#ef4444;cursor:pointer;white-space:nowrap",
+              disabled: pmSaving.value || !pmDraft.enabled, onClick: () => handleClearPlaylistCover(pid),
+            }, "清除") : null,
+          ]),
+        ]);
+      };
+
+      const renderPlaylistManagerTab = () => {
+        refreshPlaylists();
+        const created = playlists.value;
+        const favorited = favoritedPlaylists.value;
+        const totalCount = created.length + favorited.length;
+        const renderGroup = (title, items, collapsed, toggleFn) => {
+          if (items.length === 0) return null;
+          return h("div", { class: "pm-group" }, [
+            h("div", { class: "pm-group-header", onClick: toggleFn }, [
+              h("div", { class: "pm-group-header-title" }, [
+                h("span", { class: ["pm-group-arrow", collapsed.value ? "is-collapsed" : ""], innerHTML: "▼" }),
+                h("span", null, title),
+                h("span", { class: "pm-group-header-count" }, `(${items.length})`),
+              ]),
+            ]),
+            h("div", { class: ["pm-group-body", collapsed.value ? "is-collapsed" : ""] }, items.map((p) => renderPlaylistItem(p))),
+          ]);
+        };
+        return [
+          h("div", { class: "custom-icon-section" }, [
+            h("div", { class: "custom-icon-switch-row" }, [
+              h("div", { class: "custom-icon-switch-copy" }, [h("span", "开启歌单管理"), h("small", "关闭后恢复所有歌单的默认显示和封面")]),
+              h(Switch, { modelValue: pmDraft.enabled, loading: pmSaving.value, disabled: pmSaving.value, "onUpdate:modelValue": (v) => { pmDraft.enabled = Boolean(v); } }),
+            ]),
+          ]),
+          totalCount === 0
+            ? h("div", { class: "custom-icon-section" }, [
+                h("div", { style: "color:var(--color-text-secondary,rgba(148,163,184,0.9));font-size:12px;text-align:center;padding:16px 0" }, "请先登录并加载歌单数据"),
+              ])
+            : h("div", { class: "custom-icon-section", style: "display:grid;gap:12px" }, [
+                renderGroup("自建歌单", created, pmCreatedCollapsed, () => { pmCreatedCollapsed.value = !pmCreatedCollapsed.value; }),
+                renderGroup("收藏歌单", favorited, pmFavoritedCollapsed, () => { pmFavoritedCollapsed.value = !pmFavoritedCollapsed.value; }),
+              ]),
+          h("div", { class: "custom-icon-footer" }, [
+            renderBtn("恢复默认", { variant: "ghost", size: "xs", disabled: pmSaving.value, onClick: resetPmSettings }),
+            renderBtn(pmSaving.value ? "保存中..." : "保存", { variant: "primary", size: "xs", loading: pmSaving.value, disabled: pmSaving.value, onClick: savePmSettings }),
+          ]),
+        ];
+      };
+
       return () =>
         h("div", { class: ["custom-icon-settings", activeTab.value === "icons" ? "with-preview" : ""] }, [
           renderTabBar(),
           activeTab.value === "icons"
-            ? [
-                renderIconPreview(),
-                h("div", { class: "custom-icon-settings-fields" }, [
-                  ...renderIconTab(),
-                ]),
-              ]
-            : activeTab.value === "splash"
-              ? [
-                  h("div", { class: "custom-icon-settings-fields" }, [
-                    ...renderSplashTab(),
-                  ]),
-                ]
-              : [
-                  h("div", { class: "custom-icon-settings-fields" }, [
-                    ...renderAudioTab(),
-                  ]),
-                ],
+            ? [renderIconPreview(), h("div", { class: "custom-icon-settings-fields" }, [...renderIconTab()])]
+            : h("div", { class: "custom-icon-settings-fields" }, [
+                ...(activeTab.value === "splash" ? renderSplashTab() : []),
+                ...(activeTab.value === "audio" ? renderAudioTab() : []),
+                ...(activeTab.value === "pm" ? renderPlaylistManagerTab() : []),
+              ]),
         ]);
     },
   });
@@ -911,7 +1123,7 @@ const registerSettings = (ctx) => {
   settingsDispose?.();
   settingsStyleDispose?.();
   settingsStyleDispose = ctx.css.inject(SETTINGS_PANEL_CSS, { id: "custom-icon-settings" });
-  settingsDispose = ctx.ui.settings.define({ title: "自定义图标", description: "自定义托盘图标、任务栏图标、桌面快捷方式图标、启动画面以及启动音效。", component: createSettingsComponent(ctx) });
+  settingsDispose = ctx.ui.settings.define({ title: "自定义图标和封面", description: "自定义托盘图标、任务栏图标、桌面快捷方式图标、启动画面、启动音效以及管理歌单封面。", component: createSettingsComponent(ctx) });
 };
 
 export async function activate(ctx) {
@@ -920,6 +1132,11 @@ export async function activate(ctx) {
 
   if (!state) state = ctx.vue.reactive({ settings: normalized });
   else Object.assign(state.settings, normalized);
+
+  const pmLoaded = await ctx.storage.get(PM_KEY);
+  const pmNormalized = normalizePmSettings(pmLoaded);
+  if (!pmState) pmState = ctx.vue.reactive({ settings: pmNormalized });
+  else Object.assign(pmState.settings, pmNormalized);
 
   if (normalized.enabled) {
     if (normalized.splashEnabled) {
@@ -934,13 +1151,21 @@ export async function activate(ctx) {
         applySplashCss(ctx, state.settings);
         splashObserverDispose = createSplashObserver(ctx);
       } catch (e) { console.log("[custom-icon] splash setup error:", e); }
-      if (document.querySelector(".loading-view") && state.settings.splashImagePath && state.settings.splashPreviewUrl) {
+      if (getLoadingView() && state.settings.splashImagePath && state.settings.splashPreviewUrl) {
         showSplash(ctx, state.settings);
       }
     }
-    if (state.settings.splashAudioEnabled && state.settings.splashAudioPath && document.querySelector(".loading-view")) {
+    if (state.settings.splashAudioEnabled && state.settings.splashAudioPath && getLoadingView()) {
       playSplashAudio(ctx, state.settings);
     }
+  }
+
+  pmCtx = ctx;
+  if (pmNormalized.enabled) {
+    try {
+      applyHiddenPlaylists(ctx, pmNormalized);
+      await applyCustomCovers(ctx, pmNormalized);
+    } catch (e) { console.log("[custom-icon] playlist manager setup error:", e); }
   }
 
   registerSettings(ctx);
@@ -954,27 +1179,9 @@ export async function activate(ctx) {
 
   try { await ctx.appIcons.refresh(); } catch {}
 
-  ctx.dispose(() => {
-    settingsDispose?.(); settingsDispose = null;
-    settingsStyleDispose?.(); settingsStyleDispose = null;
-    removeSplash();
-    removeSplashCss();
-    stopSplashAudio();
-    const lv = document.querySelector(".loading-view");
-    if (lv) { const img = lv.querySelector(".custom-splash-img"); if (img) img.remove(); lv.style.removeProperty("background-image"); }
-    splashObserverDispose?.(); splashObserverDispose = null;
-    state = null;
-  });
+  ctx.dispose(cleanup);
 }
 
 export function deactivate() {
-  settingsDispose?.(); settingsDispose = null;
-  settingsStyleDispose?.(); settingsStyleDispose = null;
-  removeSplash();
-  removeSplashCss();
-  stopSplashAudio();
-  const lv = document.querySelector(".loading-view");
-  if (lv) { const img = lv.querySelector(".custom-splash-img"); if (img) img.remove(); lv.style.removeProperty("background-image"); }
-  splashObserverDispose?.(); splashObserverDispose = null;
-  state = null;
+  cleanup();
 }
